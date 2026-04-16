@@ -1,0 +1,23 @@
+# Credentials / secrets
+.env
+server/.dev.vars
+firmware/src/credentials.h
+
+# PlatformIO
+firmware/.pio/
+
+# Cloudflare / Wrangler
+server/.wrangler/
+server/*.sqlite
+server/*.sqlite-*
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

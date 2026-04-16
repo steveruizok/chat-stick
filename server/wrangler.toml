@@ -1,0 +1,32 @@
+name = "m5-live"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[durable_objects]
+bindings = [
+  { name = "LIVE_SESSION", class_name = "LiveSession" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["LiveSession"]
+
+# Workers AI for embeddings
+[ai]
+binding = "AI"
+
+# Vectorize for doc search
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "tldraw-docs"
+
+# D1 Database for conversation history
+[[d1_databases]]
+binding = "DB"
+database_name = "m5-live-conversations"
+database_id = "62046691-699e-438f-9b0a-f34435bcb3d3"
+
+# Environment variables (set via wrangler secret)
+# wrangler secret put GEMINI_API_KEY
+# wrangler secret put HISTORY_API_TOKEN
