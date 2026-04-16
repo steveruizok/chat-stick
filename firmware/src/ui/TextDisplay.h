@@ -20,4 +20,5 @@ private:
   String spaces(int count) const;
   void wrapBodyText(const String &text, String out[kBodyRows]) const;
   void drawLine(int row, const String &text, uint16_t color) const;
+  void drawRecordingProgress(float progress) const;
 };

@@ -50,6 +50,9 @@ export class LiveSession {
 	private currentUserText = ''
 	private currentAssistantText = ''
 	private sessionGeneration = 0
+	private currentTurnAudioBytes = 0
+	private currentTurnAbsSum = 0
+	private currentTurnSamples = 0
 	// Pending device-side tool calls keyed by call id → { name, args, startMs }
 	private pendingDeviceCalls = new Map<string, { name: string; args: unknown; startMs: number }>()
 
@@ -374,6 +377,8 @@ export class LiveSession {
 	}
 
 	private audioChunkCount = 0
+	private static readonly MIN_TURN_BYTES = 6400
+	private static readonly SILENCE_AVG_ABS_THRESHOLD = 150
 
 	private onDeviceMessage(data: string | ArrayBuffer) {
 		if (data instanceof ArrayBuffer) {
@@ -389,9 +394,14 @@ export class LiveSession {
 			}
 
 			this.audioChunkCount++
+			this.currentTurnAudioBytes += data.byteLength
+			const view = new Int16Array(data)
+			for (const sample of view) {
+				this.currentTurnAbsSum += Math.abs(sample)
+			}
+			this.currentTurnSamples += view.length
 			if (this.audioChunkCount <= 3 || this.audioChunkCount % 10 === 0) {
 				// Log first few samples as int16 for debugging
-				const view = new Int16Array(data)
 				const firstSamples = Array.from(view.slice(0, 4))
 				console.log(`[Bridge] Audio chunk #${this.audioChunkCount}: ${data.byteLength} bytes → Gemini (samples: ${firstSamples})`)
 			}
@@ -412,6 +422,10 @@ export class LiveSession {
 			try {
 				const msg = JSON.parse(data)
 				console.log('[Device]', msg.type)
+
+				if (msg.type === 'start') {
+					this.resetCurrentTurnMetrics()
+				}
 
 				// Forward tool response to Gemini
 				if (msg.type === 'tool_response' && this.geminiWs && this.geminiReady) {
@@ -453,6 +467,18 @@ export class LiveSession {
 
 				// Send trailing silence so Gemini's VAD detects end-of-speech
 				if (msg.type === 'stop' && this.geminiWs && this.geminiReady) {
+					const ignoreReason = this.getIgnoredTurnReason()
+					if (ignoreReason) {
+						console.log(`[Bridge] Ignoring accidental clip (${ignoreReason})`)
+						this.currentUserText = ''
+						this.currentAssistantText = ''
+						this.sendToDevice({ type: 'ignore_audio', reason: ignoreReason })
+						this.reconnectGeminiSession().catch((err) => {
+							console.error('[Gemini] Failed to reset ignored turn:', err)
+						})
+						return
+					}
+
 					this.audioChunkCount = 0
 					this.sendTrailingSilence()
 				}
@@ -758,6 +784,40 @@ export class LiveSession {
 		await this.commitExchange()
 	}
 
+	private getIgnoredTurnReason(): 'too_short' | 'silent' | null {
+		if (this.currentTurnAudioBytes < LiveSession.MIN_TURN_BYTES) {
+			return 'too_short'
+		}
+
+		if (this.currentTurnSamples === 0) {
+			return 'too_short'
+		}
+
+		const averageAbs = this.currentTurnAbsSum / this.currentTurnSamples
+		return averageAbs < LiveSession.SILENCE_AVG_ABS_THRESHOLD ? 'silent' : null
+	}
+
+	private resetCurrentTurnMetrics() {
+		this.audioChunkCount = 0
+		this.currentTurnAudioBytes = 0
+		this.currentTurnAbsSum = 0
+		this.currentTurnSamples = 0
+	}
+
+	private async reconnectGeminiSession() {
+		this.resetCurrentTurnMetrics()
+		if (this.geminiWs) {
+			try {
+				this.geminiWs.close()
+			} catch {
+				// ignore
+			}
+		}
+		this.geminiWs = null
+		this.geminiReady = false
+		await this.connectGemini()
+	}
+
 	private sendTrailingSilence() {
 		if (!this.geminiWs) return
 		// 1s of silence at 16kHz 16-bit mono = 32000 bytes
@@ -771,6 +831,7 @@ export class LiveSession {
 			})
 		)
 		console.log('[Bridge] Sent 1s trailing silence')
+		this.resetCurrentTurnMetrics()
 	}
 
 	private cleanup() {
@@ -804,7 +865,7 @@ export class LiveSession {
 			}
 			this.deviceWs = null
 		}
-		this.audioChunkCount = 0
+		this.resetCurrentTurnMetrics()
 	}
 }
 

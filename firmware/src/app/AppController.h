@@ -17,6 +17,8 @@ public:
 private:
   static constexpr int kMinPlaybackBytes = PLAY_SAMPLE_RATE * 2 / 4;
   static constexpr unsigned long kThinkingTimeoutMs = 15000;
+  static constexpr unsigned long kRecordingGraceMs = 500;
+  static constexpr unsigned long kMaxRecordingMs = 30000;
 
   AppState _appState = AppState::Connecting;
   String _statusText = "Starting...";
@@ -26,9 +28,12 @@ private:
   bool _turnComplete = false;
   bool _screenDirty = true;
   unsigned long _thinkingStartMs = 0;
+  unsigned long _recordingStartMs = 0;
+  unsigned long _recordStopDeadlineMs = 0;
   unsigned long _lastHeartbeatMs = 0;
   unsigned long _lastHeaderRefreshMs = 0;
   int _audioChunksSent = 0;
+  bool _recordStopPending = false;
 
   TextDisplay _display;
   PowerManager _powerManager;
@@ -53,6 +58,7 @@ private:
   void processThinkingTimeout();
   void processPower();
   void renderIfNeeded();
+  float recordingProgress() const;
 
   DisplayState buildDisplayState() const;
   String buildBodyText() const;

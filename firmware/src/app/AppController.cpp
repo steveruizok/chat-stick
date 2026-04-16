@@ -65,6 +65,15 @@ void AppController::setup() {
           [this](const String &error) {
             setAppState(AppState::Error, "Server error", error);
           },
+      .onIgnoredAudio =
+          [this](const String &reason) {
+            _turnComplete = false;
+            _audio.stopPlayback();
+            setAppState(AppState::Ready, "Ready");
+            _toolText = reason == "silent" ? "Ignored silent clip"
+                                            : "Ignored short clip";
+            _screenDirty = true;
+          },
       .onAudio =
           [this](const uint8_t *data, size_t len) {
             if (_appState != AppState::Recording) {
@@ -214,6 +223,12 @@ void AppController::handleButtons() {
     }
 
     _powerManager.registerActivity();
+    if (_appState == AppState::Recording && _recordStopPending) {
+      _recordStopPending = false;
+      _statusText = "Listening...";
+      _screenDirty = true;
+      return;
+    }
     if (_appState == AppState::Ready || _appState == AppState::Playing ||
         _appState == AppState::Thinking) {
       startRecording();
@@ -228,7 +243,10 @@ void AppController::handleButtons() {
     }
 
     if (_appState == AppState::Recording) {
-      stopRecording();
+      _recordStopPending = true;
+      _recordStopDeadlineMs = millis() + kRecordingGraceMs;
+      _statusText = "Release A to send";
+      _screenDirty = true;
     }
   }
 
@@ -257,6 +275,9 @@ void AppController::startRecording() {
   _audio.startRecording();
   _turnComplete = false;
   _audioChunksSent = 0;
+  _recordingStartMs = millis();
+  _recordStopPending = false;
+  _recordStopDeadlineMs = 0;
   _live.sendStart();
   setAppState(AppState::Recording, "Listening...");
 }
@@ -265,6 +286,8 @@ void AppController::stopRecording() {
   Serial.printf("[Rec] === STOP RECORDING === (sent %d chunks)\n",
                 _audioChunksSent);
   _audio.stopRecording();
+  _recordStopPending = false;
+  _recordStopDeadlineMs = 0;
   _live.sendStop();
   _thinkingStartMs = millis();
   setAppState(AppState::Thinking, "Thinking...");
@@ -272,6 +295,17 @@ void AppController::stopRecording() {
 
 void AppController::processRecording() {
   if (_appState != AppState::Recording) {
+    return;
+  }
+
+  if (millis() - _recordingStartMs >= kMaxRecordingMs) {
+    Serial.println("[Rec] Max recording time reached");
+    stopRecording();
+    return;
+  }
+
+  if (_recordStopPending && millis() >= _recordStopDeadlineMs) {
+    stopRecording();
     return;
   }
 
@@ -284,6 +318,7 @@ void AppController::processRecording() {
       _live.sendAudio(_audio.captureData(), _audio.captureBytes());
   _powerManager.registerActivity();
   _audioChunksSent++;
+  _screenDirty = true;
   if (_audioChunksSent <= 5 || _audioChunksSent % 10 == 0) {
     Serial.printf("[Rec] #%d sent=%d\n", _audioChunksSent, sent);
   }
@@ -353,6 +388,8 @@ DisplayState AppController::buildDisplayState() const {
   state.bodyText = buildBodyText();
   state.footerLeft = _wifi.isConnected() ? _wifi.ssid() : "offline";
   state.footerRight = _chatId.isEmpty() ? "" : _chatId.substring(0, 8);
+  state.showRecordingProgress = _appState == AppState::Recording;
+  state.recordingProgress = recordingProgress();
   return state;
 }
 
@@ -372,6 +409,9 @@ String AppController::buildBodyText() const {
     return "Ready\nHold A to talk";
 
   case AppState::Recording:
+    if (_recordStopPending) {
+      return "Listening\nRelease A to send\nPress A to keep going";
+    }
     return "Listening\nRelease A to send";
 
   case AppState::Thinking:
@@ -388,6 +428,15 @@ String AppController::buildBodyText() const {
   }
 
   return "";
+}
+
+float AppController::recordingProgress() const {
+  if (_appState != AppState::Recording || kMaxRecordingMs == 0) {
+    return 0.0f;
+  }
+
+  return static_cast<float>(millis() - _recordingStartMs) /
+         static_cast<float>(kMaxRecordingMs);
 }
 
 String AppController::deviceStatusJson() const {

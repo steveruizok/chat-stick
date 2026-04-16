@@ -7,6 +7,7 @@ namespace {
 constexpr uint16_t COLOR_BLACK = 0x0000;
 constexpr uint16_t COLOR_WHITE = 0xFFFF;
 constexpr uint16_t COLOR_GRAY = 0x7BEF;
+constexpr uint16_t COLOR_RED = 0xF800;
 constexpr int LINE_HEIGHT = 16;
 } // namespace
 
@@ -34,6 +35,10 @@ void TextDisplay::render(const DisplayState &state) {
     drawLine(i + 1, body[i], COLOR_WHITE);
   }
   drawLine(6, mergeEdgeText(state.footerLeft, state.footerRight), COLOR_GRAY);
+
+  if (state.showRecordingProgress) {
+    drawRecordingProgress(state.recordingProgress);
+  }
 }
 
 String TextDisplay::fitLine(const String &text) const {
@@ -167,4 +172,21 @@ void TextDisplay::drawLine(int row, const String &text, uint16_t color) const {
   M5.Display.setTextColor(color);
   M5.Display.setCursor(4, row * LINE_HEIGHT);
   M5.Display.print(fitLine(text));
+}
+
+void TextDisplay::drawRecordingProgress(float progress) const {
+  const int barWidth = 8;
+  const int margin = 2;
+  const int x = SCREEN_WIDTH_PX - barWidth - margin;
+  const int y = margin;
+  const int height = SCREEN_HEIGHT_PX - (margin * 2);
+  const int clampedHeight =
+      constrain(static_cast<int>(height * constrain(progress, 0.0f, 1.0f)), 0,
+                height);
+
+  M5.Display.drawRect(x, y, barWidth, height, COLOR_GRAY);
+  if (clampedHeight > 2) {
+    M5.Display.fillRect(x + 1, y + height - clampedHeight + 1, barWidth - 2,
+                        clampedHeight - 2, COLOR_RED);
+  }
 }

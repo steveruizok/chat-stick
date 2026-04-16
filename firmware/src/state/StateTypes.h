@@ -18,4 +18,6 @@ struct DisplayState {
   String bodyText;
   String footerLeft;
   String footerRight;
+  bool showRecordingProgress = false;
+  float recordingProgress = 0.0f;
 };

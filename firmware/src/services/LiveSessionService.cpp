@@ -255,6 +255,14 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     if (_callbacks.onError) {
       _callbacks.onError(message ? message : "Server error");
     }
+    return;
+  }
+
+  if (strcmp(type, "ignore_audio") == 0) {
+    const char *reason = doc["reason"];
+    if (_callbacks.onIgnoredAudio) {
+      _callbacks.onIgnoredAudio(reason ? reason : "ignored");
+    }
   }
 }
 
