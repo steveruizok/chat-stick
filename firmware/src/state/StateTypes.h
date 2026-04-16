@@ -8,6 +8,7 @@ enum class AppState {
   Recording,
   Thinking,
   Playing,
+  ConfirmReset,
   Error,
 };
 

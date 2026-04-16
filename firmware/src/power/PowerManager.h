@@ -14,12 +14,21 @@ enum class PowerState {
 
 const char *powerStateName(PowerState state);
 
+struct PowerTimeouts {
+  unsigned long dimMs;
+  unsigned long screenOffMs;
+  unsigned long lightSleepMs;
+  unsigned long powerOffMs;
+};
+
 class PowerManager {
 public:
   PowerManager();
 
   void update();
   void registerActivity();
+  void setTimeouts(const PowerTimeouts &timeouts);
+  const PowerTimeouts &timeouts() const { return _timeouts; }
 
   PowerState getState() const { return _state; }
   unsigned long getIdleTime() const;
@@ -51,6 +60,7 @@ private:
   PowerState _state;
   unsigned long _lastActivityMs;
   int _savedBrightness;
+  PowerTimeouts _timeouts;
 
   std::function<void(int)> _brightnessCallback;
   std::function<void(bool)> _wifiCallback;

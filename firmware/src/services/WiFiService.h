@@ -8,6 +8,7 @@ public:
   void init();
   bool connectKnownNetworks();
   void disconnect();
+  void reset();
 
   bool isConnected() const;
   String ssid() const;

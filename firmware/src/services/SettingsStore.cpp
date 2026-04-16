@@ -50,3 +50,13 @@ void SettingsStore::clearChatId() {
     _prefs.remove(kChatIdKey);
   }
 }
+
+void SettingsStore::reset() {
+  _brightness = DEFAULT_BRIGHTNESS;
+  _volume = DEFAULT_VOLUME;
+  _chatId = "";
+
+  if (_ready) {
+    _prefs.clear();
+  }
+}

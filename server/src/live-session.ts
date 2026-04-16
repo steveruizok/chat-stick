@@ -39,6 +39,13 @@ interface WebFetchArgs {
 	max_chars?: number
 }
 
+const DEFAULT_POWER_TIMEOUTS = {
+	dim_ms: 60_000,
+	screen_off_ms: 120_000,
+	light_sleep_ms: 300_000,
+	power_off_ms: 600_000,
+} as const
+
 export class LiveSession {
 	private state: DurableObjectState
 	private env: Env
@@ -118,7 +125,11 @@ export class LiveSession {
 			const ws = resp.webSocket
 			if (!ws) {
 				console.error('[Gemini] WebSocket upgrade failed')
-				this.sendToDevice({ type: 'error', message: 'Failed to connect to AI' })
+				this.sendToDevice({
+					type: 'error',
+					category: 'gemini_unavailable',
+					message: 'Failed to connect to AI',
+				})
 				return
 			}
 			if (sessionGeneration !== this.sessionGeneration) {
@@ -367,10 +378,11 @@ export class LiveSession {
 			)
 
 			console.log('[Gemini] Setup message sent')
-		} catch (err) {
+			} catch (err) {
 			console.error('[Gemini] Connection error:', err)
 			this.sendToDevice({
 				type: 'error',
+				category: 'gemini_unavailable',
 				message: `AI connection failed: ${err}`,
 			})
 		}
@@ -511,6 +523,10 @@ export class LiveSession {
 			console.log('[Gemini] Setup complete')
 			this.geminiReady = true
 			this.sendToDevice({ type: 'ready' })
+			this.sendToDevice({
+				type: 'settings',
+				power: DEFAULT_POWER_TIMEOUTS,
+			})
 			return
 		}
 

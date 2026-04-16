@@ -26,7 +26,9 @@ const char *powerStateName(PowerState state) {
 
 PowerManager::PowerManager()
     : _state(PowerState::Active), _lastActivityMs(millis()),
-      _savedBrightness(DEFAULT_BRIGHTNESS) {}
+      _savedBrightness(DEFAULT_BRIGHTNESS),
+      _timeouts({IDLE_DIM_MS, IDLE_SCREEN_OFF_MS, IDLE_LIGHT_SLEEP_MS,
+                 IDLE_POWER_OFF_MS}) {}
 
 void PowerManager::update() {
   if (_state == PowerState::Waking || _state == PowerState::PowerOff) {
@@ -36,13 +38,13 @@ void PowerManager::update() {
   const unsigned long idle = getIdleTime();
 
   PowerState target = PowerState::Active;
-  if (idle >= IDLE_POWER_OFF_MS) {
+  if (idle >= _timeouts.powerOffMs) {
     target = PowerState::PowerOff;
-  } else if (idle >= IDLE_LIGHT_SLEEP_MS) {
+  } else if (idle >= _timeouts.lightSleepMs) {
     target = PowerState::LightSleep;
-  } else if (idle >= IDLE_SCREEN_OFF_MS) {
+  } else if (idle >= _timeouts.screenOffMs) {
     target = PowerState::ScreenOff;
-  } else if (idle >= IDLE_DIM_MS) {
+  } else if (idle >= _timeouts.dimMs) {
     target = PowerState::Dimmed;
   }
 
@@ -57,6 +59,18 @@ void PowerManager::registerActivity() {
   if (isInterruptible()) {
     restoreActive();
   }
+}
+
+void PowerManager::setTimeouts(const PowerTimeouts &timeouts) {
+  _timeouts.dimMs = max(1000UL, timeouts.dimMs);
+  _timeouts.screenOffMs = max(_timeouts.dimMs + 1000UL, timeouts.screenOffMs);
+  _timeouts.lightSleepMs =
+      max(_timeouts.screenOffMs + 1000UL, timeouts.lightSleepMs);
+  _timeouts.powerOffMs =
+      max(_timeouts.lightSleepMs + 1000UL, timeouts.powerOffMs);
+  Serial.printf("[Power] Updated timeouts dim=%lu screen=%lu sleep=%lu off=%lu\n",
+                _timeouts.dimMs, _timeouts.screenOffMs, _timeouts.lightSleepMs,
+                _timeouts.powerOffMs);
 }
 
 void PowerManager::beginWaking() {
@@ -192,7 +206,7 @@ void PowerManager::enterLightSleep() {
     if (reason == ESP_SLEEP_WAKEUP_TIMER) {
       const unsigned long idle = getIdleTime();
       Serial.printf("[Power] Light sleep timer wake, idle=%lu ms\n", idle);
-      if (idle >= IDLE_POWER_OFF_MS) {
+      if (idle >= _timeouts.powerOffMs) {
         _state = PowerState::PowerOff;
         transitionTo(PowerState::PowerOff);
         return;

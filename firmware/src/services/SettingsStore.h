@@ -15,6 +15,7 @@ public:
   void setVolume(int volume);
   void setChatId(const String &chatId);
   void clearChatId();
+  void reset();
 
 private:
   Preferences _prefs;

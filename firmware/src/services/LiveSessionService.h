@@ -7,13 +7,13 @@
 #include <functional>
 
 struct LiveSessionCallbacks {
+  std::function<void(const String &, const String &)> onError;
   std::function<void()> onActivity;
   std::function<void(const String &)> onStatus;
   std::function<void()> onReady;
   std::function<void()> onTurnComplete;
   std::function<void(const String &)> onChatId;
   std::function<void(const String &)> onShowText;
-  std::function<void(const String &)> onError;
   std::function<void(const String &)> onIgnoredAudio;
   std::function<void(const uint8_t *, size_t)> onAudio;
   std::function<void(int)> onBrightness;
@@ -21,6 +21,9 @@ struct LiveSessionCallbacks {
   std::function<bool(const String &)> onPlaySound;
   std::function<bool(const String &)> onPlayMelody;
   std::function<void()> onPowerOff;
+  std::function<void(unsigned long, unsigned long, unsigned long,
+                     unsigned long)>
+      onPowerTimeouts;
   std::function<String()> getDeviceStatusJson;
 };
 

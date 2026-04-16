@@ -45,6 +45,14 @@ void WiFiService::disconnect() {
   WiFi.mode(WIFI_OFF);
 }
 
+void WiFiService::reset() {
+  _savedNetworkCount = 0;
+  if (_prefsReady) {
+    _prefs.clear();
+  }
+  disconnect();
+}
+
 bool WiFiService::isConnected() const { return WiFi.status() == WL_CONNECTED; }
 
 String WiFiService::ssid() const { return isConnected() ? WiFi.SSID() : ""; }

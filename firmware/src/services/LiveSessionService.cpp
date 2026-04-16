@@ -238,6 +238,19 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     return;
   }
 
+  if (strcmp(type, "settings") == 0) {
+    if (_callbacks.onPowerTimeouts) {
+      _callbacks.onPowerTimeouts(doc["power"]["dim_ms"] | IDLE_DIM_MS,
+                                 doc["power"]["screen_off_ms"] |
+                                     IDLE_SCREEN_OFF_MS,
+                                 doc["power"]["light_sleep_ms"] |
+                                     IDLE_LIGHT_SLEEP_MS,
+                                 doc["power"]["power_off_ms"] |
+                                     IDLE_POWER_OFF_MS);
+    }
+    return;
+  }
+
   if (strcmp(type, "tool_call") == 0) {
     handleToolCall(doc);
     return;
@@ -250,10 +263,13 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "error") == 0) {
+    const char *category = doc["category"];
     const char *message = doc["message"];
-    Serial.printf("[Server] Error: %s\n", message ? message : "unknown");
+    Serial.printf("[Server] Error: [%s] %s\n", category ? category : "server",
+                  message ? message : "unknown");
     if (_callbacks.onError) {
-      _callbacks.onError(message ? message : "Server error");
+      _callbacks.onError(category ? category : "server",
+                         message ? message : "Server error");
     }
     return;
   }
