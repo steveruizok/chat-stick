@@ -19,7 +19,7 @@ M5StickS3 ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebS
 
 **Server** (`server/`) — Cloudflare Worker with a Durable Object (`LiveSession`) that bridges the device to Gemini's Live API. Holds conversation history in D1, routes tool calls (web fetch, web search, vector database lookups, device info and control), and manages session lifecycle.
 
-The device persists brightness, volume, and the current `chat_id` in ESP32 NVS so those settings survive reboots. On boot, it reuses the saved chat session and fetches the last assistant reply from the server before reconnecting.
+The device persists brightness, volume, the current `chat_id`, and recently successful WiFi credentials in ESP32 NVS so those settings survive reboots. On boot, it reuses the saved chat session, prefers saved WiFi networks, and fetches the last assistant reply from the server before reconnecting.
 
 ## Prerequisites
 
