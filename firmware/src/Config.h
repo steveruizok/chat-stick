@@ -30,7 +30,7 @@ constexpr const char *GTS_ROOT_R4_CA =
 
 constexpr ServerEndpoint SERVER_ENDPOINTS[] = {
     {"192.168.1.100", 8787, nullptr},
-    {"m5-live.tldraw.workers.dev", 443, GTS_ROOT_R4_CA},
+    {"m5-live.your-account.workers.dev", 443, GTS_ROOT_R4_CA},
 };
 
 constexpr int SERVER_ENDPOINT_COUNT =

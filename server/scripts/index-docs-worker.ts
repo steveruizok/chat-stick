@@ -31,7 +31,7 @@ export default {
 		}
 
 		if (url.pathname === '/search') {
-			const q = url.searchParams.get('q') || 'what is tldraw'
+			const q = url.searchParams.get('q') || 'hello'
 			return searchDocs(q, env)
 		}
 

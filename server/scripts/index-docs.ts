@@ -1,5 +1,5 @@
 /**
- * Embed and index tldraw docs into Vectorize.
+ * Embed and index docs into Vectorize.
  *
  * Uses the Cloudflare API directly (not Workers AI binding)
  * so it can run as a standalone script.
@@ -14,7 +14,7 @@ import docsIndex from '../src/docs-index.json'
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || ''
 const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || ''
-const INDEX_NAME = 'tldraw-docs'
+const INDEX_NAME = 'chat-stick-docs'
 const EMBEDDING_MODEL = '@cf/baai/bge-base-en-v1.5'
 const BATCH_SIZE = 20 // Vectorize upsert batch limit
 

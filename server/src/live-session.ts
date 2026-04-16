@@ -217,22 +217,15 @@ export class LiveSession {
 										'- set_volume: adjust speaker volume',
 										'- show_text: display a message on the screen',
 										'- get_device_status: check battery, volume, brightness, etc.',
-										'- search_tldraw_docs: search tldraw SDK documentation',
+										'- search_docs: search the indexed knowledge base',
 										'- web_fetch: fetch a specific URL and read its text content',
 										'- google_search: search the web for current information (news, facts, recent events)',
 										'- new_conversation: reset the chat (say goodbye first)',
 										'',
-										'When you say the product name out loud, pronounce it as if it were spelled',
-										'"tee ell draw" — do not explain the pronunciation, just use it naturally.',
+										'You have a search_docs tool that searches an indexed knowledge base.',
+										'Use it when the user asks about topics that may be covered in the indexed documents.',
 										'',
-										'You have special knowledge about tldraw, an infinite canvas SDK',
-										'for the web. tldraw lets developers add a collaborative whiteboard to any web app.',
-										'It\'s built with React and TypeScript. Key concepts: the Editor class is the main API,',
-										'shapes are the building blocks, tools handle user input, and the store manages state.',
-										'tldraw supports real-time collaboration, custom shapes, and a rich UI component library.',
-										'Use search_tldraw_docs to look up specific technical details about the SDK.',
-										'',
-										'Use tools when the user asks to change device settings or asks about tldraw.',
+										'Use tools when the user asks to change device settings or needs information.',
 										'When you don\'t understand the audio, say so briefly rather than guessing.',
 									].join('\n'),
 								},
@@ -297,16 +290,16 @@ export class LiveSession {
 										},
 									},
 									{
-										name: 'search_tldraw_docs',
+										name: 'search_docs',
 										description:
-											'Search the tldraw SDK documentation. Use this to answer questions about tldraw — the infinite canvas SDK, its API, components, shapes, editor, tools, collaboration features, and more. Returns relevant documentation entries.',
+											'Search the indexed knowledge base. Returns relevant documentation entries matching the query.',
 										parameters: {
 											type: 'OBJECT',
 											properties: {
 												query: {
 													type: 'STRING',
 													description:
-														'Search query — keywords or a question about tldraw',
+														'Search query — keywords or a question',
 												},
 											},
 											required: ['query'],
@@ -517,7 +510,7 @@ export class LiveSession {
 				console.log(`[Gemini] Tool call: ${call.name}(${JSON.stringify(call.args)})`)
 				const startMs = Date.now()
 
-				if (call.name === 'search_tldraw_docs') {
+				if (call.name === 'search_docs') {
 					const query = (call.args as { query?: string }).query || ''
 					console.log(`[Gemini] Vector search: "${query}"`)
 

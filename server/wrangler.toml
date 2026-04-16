@@ -19,13 +19,14 @@ binding = "AI"
 # Vectorize for doc search
 [[vectorize]]
 binding = "VECTORIZE"
-index_name = "tldraw-docs"
+index_name = "chat-stick-docs"
 
 # D1 Database for conversation history
 [[d1_databases]]
 binding = "DB"
 database_name = "m5-live-conversations"
 database_id = "62046691-699e-438f-9b0a-f34435bcb3d3"
+migrations_dir = "migrations"
 
 # Environment variables (set via wrangler secret)
 # wrangler secret put GEMINI_API_KEY

@@ -35,13 +35,13 @@ export default {
 				return stub.fetch(request)
 			}
 
-			// Admin: index tldraw docs into Vectorize
+			// Admin: index docs into Vectorize
 			case '/admin/index':
 				return indexDocs(env)
 
 			// Admin: test vector search
 			case '/admin/search': {
-				const q = url.searchParams.get('q') || 'what is tldraw'
+				const q = url.searchParams.get('q') || 'hello'
 				return vectorSearch(q, env)
 			}
 

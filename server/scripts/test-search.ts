@@ -1,5 +1,5 @@
 /**
- * Test the tldraw docs search function locally.
+ * Test the docs keyword search function locally.
  * Runs queries and shows what the model would see.
  */
 import docsIndex from '../src/docs-index.json'
@@ -34,30 +34,10 @@ function searchDocs(query: string, limit = 5): DocEntry[] {
 // ── Test cases ──
 
 const tests = [
-	// Basic concepts
-	'What is the Editor class?',
-	'How do I create shapes?',
-	'What are tools in tldraw?',
-
-	// Features
-	'How does collaboration work?',
-	'How do I add custom shapes?',
-	'How do I handle assets and images?',
-
-	// Specific topics
-	'How do I use the store?',
-	'What persistence options are available?',
-	'How do I customize the user interface?',
-	'How do handles work?',
-
-	// Getting started
-	'How do I install tldraw?',
-	'What starter kits are available?',
-
-	// Edge cases — should still find something relevant
-	'How do I zoom to fit?',
-	'Can I use tldraw with Next.js?',
-	'How do I export shapes as SVG?',
+	// Add your own test queries here based on your indexed content
+	'getting started',
+	'how does it work',
+	'configuration options',
 ]
 
 console.log(`Docs index: ${docsIndex.length} entries\n`)

@@ -1,16 +1,20 @@
 /**
- * Build a searchable docs index from the tldraw docs content.
+ * Build a searchable docs index from a directory of .mdx content files.
  *
- * Full content for hand-written docs (docs/, sdk-features/, getting-started/, starter-kits/).
- * Title + category + first paragraph for reference docs (too large to embed fully).
+ * Set DOCS_PATH to point at your content directory. Each subdirectory
+ * becomes a section. Outputs src/docs-index.json for keyword search
+ * and Vectorize indexing.
  *
- * Output: src/docs-index.json
+ * Usage: DOCS_PATH=/path/to/content npx tsx scripts/build-docs-index.ts
  */
 import { readdir, readFile, writeFile } from 'fs/promises'
 import { join, basename } from 'path'
 
-const TLDRAW_DOCS = process.env.TLDRAW_DOCS
-	|| '/Users/stephenruiz/Documents/GitHub/tldraw/apps/docs/content'
+const DOCS_PATH = process.env.DOCS_PATH
+if (!DOCS_PATH) {
+	console.error('Set DOCS_PATH to your content directory')
+	process.exit(1)
+}
 
 interface DocEntry {
 	id: string
@@ -48,7 +52,7 @@ function stripMdx(body: string): string {
 	return body
 		.replace(/<[^>]+>/g, '') // strip JSX/HTML tags
 		.replace(/```[\s\S]*?```/g, '[code block]') // collapse code blocks
-		.replace(/\[([^\]]*)\]\(\?\)/g, '$1') // tldraw doc links [Name](?)
+		.replace(/\[([^\]]*)\]\(\?\)/g, '$1') // shorthand doc links [Name](?)
 		.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // markdown links
 		.replace(/#{1,6}\s*/g, '') // heading markers
 		.replace(/\*\*([^*]+)\*\*/g, '$1') // bold
@@ -90,14 +94,14 @@ async function readSection(dir: string, section: string, fullContent: boolean): 
 async function main() {
 	const all: DocEntry[] = []
 
-	// Full content sections
-	for (const section of ['docs', 'sdk-features', 'getting-started', 'starter-kits', 'community']) {
-		const entries = await readSection(join(TLDRAW_DOCS, section), section, true)
+	// Read each subdirectory as a section
+	const sections = await readdir(DOCS_PATH, { withFileTypes: true })
+	for (const entry of sections) {
+		if (!entry.isDirectory()) continue
+		const entries = await readSection(join(DOCS_PATH, entry.name), entry.name, true)
 		all.push(...entries)
-		console.log(`${section}: ${entries.length} entries`)
+		console.log(`${entry.name}: ${entries.length} entries`)
 	}
-
-	// Skip reference/ — too large and not useful for voice queries
 
 	const json = JSON.stringify(all)
 	const outPath = join(import.meta.dirname, '..', 'src', 'docs-index.json')
