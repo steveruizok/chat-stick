@@ -27,6 +27,19 @@ struct LiveSessionCallbacks {
   std::function<String()> getDeviceStatusJson;
 };
 
+struct ConversationSummary {
+  String chatId;
+  String lastMessage;
+  String updatedAt;
+};
+
+struct FirmwareUpdateInfo {
+  bool available = false;
+  int latestVersion = 0;
+  String notes;
+  String downloadUrl;
+};
+
 class LiveSessionService {
 public:
   void init(const LiveSessionCallbacks &callbacks);
@@ -44,6 +57,9 @@ public:
   bool sendStop();
   bool sendAudio(const int16_t *data, size_t len);
   bool fetchLastAssistantMessage(String &outMessage);
+  bool fetchConversationHistory(ConversationSummary outEntries[], int maxEntries,
+                                int &outCount);
+  bool checkFirmwareUpdate(FirmwareUpdateInfo &outInfo);
 
 private:
   websockets::WebsocketsClient _ws;

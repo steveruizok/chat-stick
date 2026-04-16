@@ -10,6 +10,10 @@ export interface Env {
 	VECTORIZE: VectorizeIndex
 	DB: D1Database
 	HISTORY_API_TOKEN: string
+	OTA_BUCKET?: R2Bucket
+	FIRMWARE_LATEST_VERSION?: string
+	FIRMWARE_NOTES?: string
+	FIRMWARE_OBJECT_KEY?: string
 }
 
 export default {
@@ -48,15 +52,54 @@ export default {
 			case '/health':
 				return new Response('ok')
 
+			case '/firmware/check': {
+				const currentVersion = Number(url.searchParams.get('version') || '0')
+				const latestVersion = Number(env.FIRMWARE_LATEST_VERSION || currentVersion || 0)
+				const hasDownload = !!env.OTA_BUCKET && !!env.FIRMWARE_OBJECT_KEY
+				return json({
+					available: hasDownload && latestVersion > currentVersion,
+					latest_version: latestVersion,
+					notes: env.FIRMWARE_NOTES || '',
+					download_url:
+						hasDownload && latestVersion > currentVersion
+							? `${url.origin}/firmware/download`
+							: '',
+				})
+			}
+
+			case '/firmware/download': {
+				if (!env.OTA_BUCKET || !env.FIRMWARE_OBJECT_KEY) {
+					return new Response('Firmware download unavailable', { status: 404 })
+				}
+
+				const object = await env.OTA_BUCKET.get(env.FIRMWARE_OBJECT_KEY)
+				if (!object) {
+					return new Response('Firmware not found', { status: 404 })
+				}
+
+				const headers = new Headers()
+				object.writeHttpMetadata(headers)
+				headers.set('etag', object.httpEtag)
+				headers.set(
+					'content-disposition',
+					`attachment; filename="${env.FIRMWARE_OBJECT_KEY.split('/').pop() || 'firmware.bin'}"`
+				)
+				return new Response(object.body, { headers })
+			}
+
 			default: {
 				// /history/:deviceId — list recent conversations
 				const historyMatch = url.pathname.match(/^\/history\/(.+)$/)
 				if (historyMatch) {
-					if (!isAuthorizedHistoryRequest(request, env)) {
+					const deviceId = decodeURIComponent(historyMatch[1])
+					const requestedDeviceId = url.searchParams.get('device_id') ?? ''
+					const authorized =
+						isAuthorizedHistoryRequest(request, env) ||
+						(!!requestedDeviceId && requestedDeviceId === deviceId)
+					if (!authorized) {
 						return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
 					}
 
-					const deviceId = decodeURIComponent(historyMatch[1])
 					const rows = await env.DB.prepare(
 						`SELECT chat_id, last_message, updated_at
 						 FROM conversations
@@ -124,6 +167,17 @@ function corsHeaders(): HeadersInit {
 		'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 		'Access-Control-Allow-Headers': 'Content-Type, X-History-Token',
 	}
+}
+
+function json(payload: unknown, init?: ResponseInit): Response {
+	return new Response(JSON.stringify(payload), {
+		...init,
+		headers: {
+			...corsHeaders(),
+			'Content-Type': 'application/json',
+			...(init?.headers || {}),
+		},
+	})
 }
 
 function isAuthorizedHistoryRequest(request: Request, env: Env): boolean {

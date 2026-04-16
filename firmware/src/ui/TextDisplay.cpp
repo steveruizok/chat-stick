@@ -7,8 +7,11 @@ namespace {
 constexpr uint16_t COLOR_BLACK = 0x0000;
 constexpr uint16_t COLOR_WHITE = 0xFFFF;
 constexpr uint16_t COLOR_GRAY = 0x7BEF;
+constexpr uint16_t COLOR_DARK_GRAY = 0x39E7;
 constexpr uint16_t COLOR_RED = 0xF800;
+constexpr uint16_t COLOR_BLUE = 0x041F;
 constexpr int LINE_HEIGHT = 16;
+constexpr int PAGE_DOT_RADIUS = 2;
 } // namespace
 
 void TextDisplay::init() {
@@ -16,6 +19,9 @@ void TextDisplay::init() {
   M5.Display.setFont(&fonts::AsciiFont8x16);
   M5.Display.setTextSize(1);
   M5.Display.fillScreen(COLOR_BLACK);
+  _canvas.setColorDepth(16);
+  _canvas.createSprite(SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX);
+  _canvasReady = true;
 }
 
 void TextDisplay::setBrightness(uint8_t brightness) {
@@ -23,22 +29,58 @@ void TextDisplay::setBrightness(uint8_t brightness) {
 }
 
 void TextDisplay::render(const DisplayState &state) {
-  String body[kBodyRows];
-  wrapBodyText(state.bodyText, body);
+  if (_canvasReady) {
+    _canvas.fillScreen(COLOR_BLACK);
+    _canvas.setFont(&fonts::AsciiFont8x16);
+    _canvas.setTextSize(1);
+  } else {
+    M5.Display.fillScreen(COLOR_BLACK);
+    M5.Display.setFont(&fonts::AsciiFont8x16);
+    M5.Display.setTextSize(1);
+  }
 
-  M5.Display.fillScreen(COLOR_BLACK);
-  M5.Display.setFont(&fonts::AsciiFont8x16);
-  M5.Display.setTextSize(1);
+  if (!state.showMenu &&
+      (state.appState == AppState::Connecting ||
+       state.appState == AppState::Thinking)) {
+    drawLoadingAnimation(state.animationPhase);
+  }
 
   drawLine(0, mergeEdgeText(state.headerLeft, state.headerRight), COLOR_GRAY);
-  for (int i = 0; i < kBodyRows; i++) {
-    drawLine(i + 1, body[i], COLOR_WHITE);
+  if (state.showMenu) {
+    drawMenu(state);
+  } else {
+    String wrapped[32];
+    const int wrappedCount = wrapBodyText(state.bodyText, wrapped, 32);
+    const int pageCount =
+        max(1, (wrappedCount + kBodyRows - 1) / kBodyRows);
+    const int safePageIndex =
+        constrain(state.pageIndex, 0, max(0, pageCount - 1));
+
+    for (int i = 0; i < kBodyRows; i++) {
+      const int lineIndex = safePageIndex * kBodyRows + i;
+      drawLine(i + 1, lineIndex < wrappedCount ? wrapped[lineIndex] : "",
+               COLOR_WHITE);
+    }
+    if (pageCount > 1) {
+      drawPageIndicator(safePageIndex, pageCount);
+    }
   }
+
   drawLine(6, mergeEdgeText(state.footerLeft, state.footerRight), COLOR_GRAY);
 
   if (state.showRecordingProgress) {
     drawRecordingProgress(state.recordingProgress);
   }
+
+  if (_canvasReady) {
+    _canvas.pushSprite(0, 0);
+  }
+}
+
+int TextDisplay::pageCountForText(const String &text) const {
+  String wrapped[32];
+  const int wrappedCount = wrapBodyText(text, wrapped, 32);
+  return max(1, (wrappedCount + kBodyRows - 1) / kBodyRows);
 }
 
 String TextDisplay::fitLine(const String &text) const {
@@ -79,8 +121,8 @@ String TextDisplay::spaces(int count) const {
   return out;
 }
 
-void TextDisplay::wrapBodyText(const String &text, String out[kBodyRows]) const {
-  for (int i = 0; i < kBodyRows; i++) {
+int TextDisplay::wrapBodyText(const String &text, String out[], int maxRows) const {
+  for (int i = 0; i < maxRows; i++) {
     out[i] = "";
   }
 
@@ -89,7 +131,7 @@ void TextDisplay::wrapBodyText(const String &text, String out[kBodyRows]) const 
   String word;
 
   auto flushLine = [&]() {
-    if (row >= kBodyRows) {
+    if (row >= maxRows) {
       return;
     }
     out[row++] = fitLine(line);
@@ -108,7 +150,7 @@ void TextDisplay::wrapBodyText(const String &text, String out[kBodyRows]) const 
       }
 
       int start = 0;
-      while (start < token.length() && row < kBodyRows) {
+      while (start < token.length() && row < maxRows) {
         out[row++] = fitLine(token.substring(start, start + kCharsPerLine));
         start += kCharsPerLine;
       }
@@ -123,7 +165,7 @@ void TextDisplay::wrapBodyText(const String &text, String out[kBodyRows]) const 
     }
 
     flushLine();
-    if (row >= kBodyRows) {
+    if (row >= maxRows) {
       return;
     }
 
@@ -133,14 +175,14 @@ void TextDisplay::wrapBodyText(const String &text, String out[kBodyRows]) const 
     }
 
     int start = 0;
-    while (start < token.length() && row < kBodyRows) {
+    while (start < token.length() && row < maxRows) {
       out[row++] = fitLine(token.substring(start, start + kCharsPerLine));
       start += kCharsPerLine;
     }
     line = "";
   };
 
-  for (int i = 0; i <= static_cast<int>(text.length()) && row < kBodyRows; i++) {
+  for (int i = 0; i <= static_cast<int>(text.length()) && row < maxRows; i++) {
     const char c = i < static_cast<int>(text.length()) ? text[i] : '\n';
     if (c == '\n') {
       appendWord(word);
@@ -160,15 +202,25 @@ void TextDisplay::wrapBodyText(const String &text, String out[kBodyRows]) const 
     }
   }
 
-  if (row < kBodyRows) {
+  if (row < maxRows) {
     appendWord(word);
-    if (!line.isEmpty() && row < kBodyRows) {
+    if (!line.isEmpty() && row < maxRows) {
       out[row] = fitLine(line);
+      row++;
     }
   }
+
+  return max(1, row);
 }
 
 void TextDisplay::drawLine(int row, const String &text, uint16_t color) const {
+  if (_canvasReady) {
+    _canvas.setTextColor(color);
+    _canvas.setCursor(4, row * LINE_HEIGHT);
+    _canvas.print(fitLine(text));
+    return;
+  }
+
   M5.Display.setTextColor(color);
   M5.Display.setCursor(4, row * LINE_HEIGHT);
   M5.Display.print(fitLine(text));
@@ -184,9 +236,105 @@ void TextDisplay::drawRecordingProgress(float progress) const {
       constrain(static_cast<int>(height * constrain(progress, 0.0f, 1.0f)), 0,
                 height);
 
-  M5.Display.drawRect(x, y, barWidth, height, COLOR_GRAY);
+  if (_canvasReady) {
+    _canvas.drawRect(x, y, barWidth, height, COLOR_GRAY);
+  } else {
+    M5.Display.drawRect(x, y, barWidth, height, COLOR_GRAY);
+  }
   if (clampedHeight > 2) {
-    M5.Display.fillRect(x + 1, y + height - clampedHeight + 1, barWidth - 2,
-                        clampedHeight - 2, COLOR_RED);
+    if (_canvasReady) {
+      _canvas.fillRect(x + 1, y + height - clampedHeight + 1, barWidth - 2,
+                       clampedHeight - 2, COLOR_RED);
+    } else {
+      M5.Display.fillRect(x + 1, y + height - clampedHeight + 1, barWidth - 2,
+                          clampedHeight - 2, COLOR_RED);
+    }
+  }
+}
+
+void TextDisplay::drawLoadingAnimation(uint8_t phase) const {
+  const int offset = (phase % 6) * 10;
+  for (int x = -SCREEN_HEIGHT_PX; x < SCREEN_WIDTH_PX + SCREEN_HEIGHT_PX;
+       x += 28) {
+    const int shifted = x + offset;
+    if (_canvasReady) {
+      _canvas.drawLine(shifted, 0, shifted + SCREEN_HEIGHT_PX, SCREEN_HEIGHT_PX,
+                       COLOR_DARK_GRAY);
+      _canvas.drawLine(shifted + 2, 0, shifted + SCREEN_HEIGHT_PX + 2,
+                       SCREEN_HEIGHT_PX, COLOR_GRAY);
+    } else {
+      M5.Display.drawLine(shifted, 0, shifted + SCREEN_HEIGHT_PX,
+                          SCREEN_HEIGHT_PX, COLOR_DARK_GRAY);
+      M5.Display.drawLine(shifted + 2, 0, shifted + SCREEN_HEIGHT_PX + 2,
+                          SCREEN_HEIGHT_PX, COLOR_GRAY);
+    }
+  }
+}
+
+void TextDisplay::drawPageIndicator(int pageIndex, int pageCount) const {
+  if (pageCount <= 1) {
+    return;
+  }
+
+  const int totalWidth = pageCount * (PAGE_DOT_RADIUS * 2 + 4) - 4;
+  int x = (SCREEN_WIDTH_PX - totalWidth) / 2;
+  const int y = SCREEN_HEIGHT_PX - 8;
+  for (int i = 0; i < pageCount; i++) {
+    const uint16_t color = i == pageIndex ? COLOR_WHITE : COLOR_DARK_GRAY;
+    if (_canvasReady) {
+      _canvas.fillCircle(x + PAGE_DOT_RADIUS, y, PAGE_DOT_RADIUS, color);
+    } else {
+      M5.Display.fillCircle(x + PAGE_DOT_RADIUS, y, PAGE_DOT_RADIUS, color);
+    }
+    x += PAGE_DOT_RADIUS * 2 + 4;
+  }
+}
+
+void TextDisplay::drawMenu(const DisplayState &state) const {
+  drawLine(1, fitLine(state.menuTitle), COLOR_BLUE);
+
+  const int startRow = 6 - state.menuItemCount;
+  for (int i = 0; i < state.menuItemCount; i++) {
+    const int row = startRow + i;
+    const bool selected = i == state.menuSelectedIndex;
+    if (selected) {
+      const int y = row * LINE_HEIGHT + 4;
+      if (_canvasReady) {
+        _canvas.fillTriangle(2, y + 6, 8, y + 1, 8, y + 11, COLOR_WHITE);
+      } else {
+        M5.Display.fillTriangle(2, y + 6, 8, y + 1, 8, y + 11, COLOR_WHITE);
+      }
+    }
+    drawLine(row, String(selected ? " " : "  ") + state.menuItems[i],
+             selected ? COLOR_WHITE : COLOR_GRAY);
+  }
+
+  const int indicatorX = SCREEN_WIDTH_PX - 10;
+  if (state.menuHasMoreAbove) {
+    if (_canvasReady) {
+      _canvas.fillTriangle(indicatorX, 22, indicatorX - 4, 28, indicatorX + 4,
+                           28, COLOR_GRAY);
+    } else {
+      M5.Display.fillTriangle(indicatorX, 22, indicatorX - 4, 28,
+                              indicatorX + 4, 28, COLOR_GRAY);
+    }
+  }
+  if (state.menuHasMoreBelow) {
+    if (_canvasReady) {
+      _canvas.fillTriangle(indicatorX, SCREEN_HEIGHT_PX - 22, indicatorX - 4,
+                           SCREEN_HEIGHT_PX - 28, indicatorX + 4,
+                           SCREEN_HEIGHT_PX - 28, COLOR_GRAY);
+    } else {
+      M5.Display.fillTriangle(indicatorX, SCREEN_HEIGHT_PX - 22,
+                              indicatorX - 4, SCREEN_HEIGHT_PX - 28,
+                              indicatorX + 4, SCREEN_HEIGHT_PX - 28,
+                              COLOR_GRAY);
+    }
+  } else {
+    if (_canvasReady) {
+      _canvas.fillCircle(indicatorX, SCREEN_HEIGHT_PX - 25, 2, COLOR_GRAY);
+    } else {
+      M5.Display.fillCircle(indicatorX, SCREEN_HEIGHT_PX - 25, 2, COLOR_GRAY);
+    }
   }
 }

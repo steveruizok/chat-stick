@@ -6,6 +6,7 @@
 #include <WiFi.h>
 
 void AppController::setup() {
+  const unsigned long bootStartMs = millis();
   Serial.begin(115200);
   delay(1500);
   Serial.println("\n\n=== M5 Live Voice Assistant ===");
@@ -46,7 +47,10 @@ void AppController::setup() {
       setAppState(AppState::Connecting, status);
     }
   };
-  callbacks.onReady = [this]() { setAppState(AppState::Ready, "Ready"); };
+  callbacks.onReady = [this]() {
+    _appRegion = AppRegion::Chat;
+    setAppState(AppState::Ready, "Ready");
+  };
   callbacks.onTurnComplete = [this]() { _turnComplete = true; };
   callbacks.onChatId = [this](const String &chatId) {
     _chatId = chatId;
@@ -56,6 +60,7 @@ void AppController::setup() {
   };
   callbacks.onShowText = [this](const String &text) {
     _toolText = text;
+    resetBodyPage();
     _screenDirty = true;
   };
   callbacks.onError = [this](const String &category, const String &error) {
@@ -70,6 +75,7 @@ void AppController::setup() {
     setAppState(AppState::Ready, "Ready");
     _toolText =
         reason == "silent" ? "Ignored silent clip" : "Ignored short clip";
+    resetBodyPage();
     _screenDirty = true;
   };
   callbacks.onAudio = [this](const uint8_t *data, size_t len) {
@@ -118,6 +124,12 @@ void AppController::setup() {
   Serial.printf("Playback: %d Hz, max %d s\n", PLAY_SAMPLE_RATE,
                 MAX_PLAYBACK_SEC);
 
+  renderIfNeeded();
+  const unsigned long bootElapsedMs = millis() - bootStartMs;
+  if (bootElapsedMs < kMinBootDisplayMs) {
+    delay(kMinBootDisplayMs - bootElapsedMs);
+  }
+
   connectNetworkStack();
   renderIfNeeded();
 }
@@ -127,8 +139,8 @@ void AppController::loop() {
 
   if (millis() - _lastHeartbeatMs > 3000) {
     _lastHeartbeatMs = millis();
-    Serial.printf("[Loop] state=%d power=%s ws=%d sleep=%d\n",
-                  static_cast<int>(_appState),
+    Serial.printf("[Loop] state=%d region=%d power=%s ws=%d sleep=%d\n",
+                  static_cast<int>(_appState), static_cast<int>(_appRegion),
                   powerStateName(_powerManager.getState()), _live.isConnected(),
                   _powerManager.getState() == PowerState::LightSleep);
   }
@@ -138,6 +150,7 @@ void AppController::loop() {
     _screenDirty = true;
   }
 
+  _wifi.poll();
   _live.poll();
   _live.reconnectIfNeeded(_wifi.isConnected() &&
                           _powerManager.getState() != PowerState::LightSleep &&
@@ -148,6 +161,8 @@ void AppController::loop() {
   processPlayback();
   processThinkingTimeout();
   processPower();
+  processCaptivePortal();
+  processAnimations();
   renderIfNeeded();
   delay(1);
 }
@@ -169,10 +184,11 @@ void AppController::configureCallbacks() {
 }
 
 void AppController::connectNetworkStack() {
+  _appRegion = AppRegion::Chat;
   setAppState(AppState::Connecting, "Connecting...");
   if (!_wifi.connectKnownNetworks()) {
     setErrorState(ErrorCategory::WiFiTimeout, "WiFi failed",
-                  "Timed out on known networks");
+                  "A retry  B hold menu");
     return;
   }
 
@@ -194,10 +210,6 @@ void AppController::setNetworkEnabled(bool enabled) {
 
 void AppController::setAppState(AppState state, const String &status,
                                 const String &error) {
-  if (_appState != state) {
-    clearToolText();
-  }
-
   _appState = state;
   if (state != AppState::Error) {
     _errorCategory = ErrorCategory::None;
@@ -206,6 +218,7 @@ void AppController::setAppState(AppState state, const String &status,
     _statusText = status;
   }
   _errorText = error;
+  resetBodyPage();
   _screenDirty = true;
 }
 
@@ -215,10 +228,32 @@ void AppController::setErrorState(ErrorCategory category, const String &status,
   _appState = AppState::Error;
   _statusText = status;
   _errorText = error;
+  _appRegion = AppRegion::Chat;
+  resetBodyPage();
   _screenDirty = true;
 }
 
-void AppController::clearToolText() { _toolText = ""; }
+void AppController::retryAfterError() {
+  switch (_errorCategory) {
+  case ErrorCategory::Startup:
+    ESP.restart();
+    return;
+  case ErrorCategory::WiFiTimeout:
+  case ErrorCategory::ServerRefused:
+  case ErrorCategory::GeminiUnavailable:
+  case ErrorCategory::None:
+  default:
+    connectNetworkStack();
+    return;
+  }
+}
+
+void AppController::clearToolText() {
+  _toolText = "";
+  resetBodyPage();
+}
+
+void AppController::resetBodyPage() { _bodyPageIndex = 0; }
 
 void AppController::restoreSessionPreview() {
   if (_chatId.isEmpty()) {
@@ -229,31 +264,37 @@ void AppController::restoreSessionPreview() {
   if (_live.fetchLastAssistantMessage(lastMessage) && !lastMessage.isEmpty()) {
     _toolText = lastMessage;
     _statusText = "Restored";
+    resetBodyPage();
     _screenDirty = true;
   }
 }
 
 void AppController::handleButtons() {
+  const unsigned long now = millis();
+  _buttonA.update(M5.BtnA.isPressed(), now);
+  _buttonB.update(M5.BtnB.isPressed(), now);
+
   if (_appState == AppState::ConfirmReset) {
-    if (M5.BtnA.wasPressed()) {
+    if (_buttonA.consumeClick()) {
       beginFactoryReset();
       return;
     }
 
-    if (M5.BtnB.wasPressed()) {
+    if (_buttonB.consumeClick()) {
       _appState = _resetReturnState;
       _statusText = _resetReturnStatus;
       _errorText = _resetReturnError;
       _errorCategory = _resetReturnCategory;
+      _appRegion = AppRegion::Chat;
       _screenDirty = true;
       return;
     }
   }
 
-  if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) {
+  if (_buttonA.isPressed() && _buttonB.isPressed()) {
     if (_resetHoldStartMs == 0) {
-      _resetHoldStartMs = millis();
-    } else if (millis() - _resetHoldStartMs >= kResetHoldMs &&
+      _resetHoldStartMs = now;
+    } else if (now - _resetHoldStartMs >= kResetHoldMs &&
                _appState != AppState::Recording &&
                _appState != AppState::ConfirmReset) {
       _resetReturnState = _appState;
@@ -269,69 +310,337 @@ void AppController::handleButtons() {
     _resetHoldStartMs = 0;
   }
 
-  if (M5.BtnA.wasPressed()) {
-    if (_powerManager.isInterruptible()) {
-      _powerManager.beginWaking();
-      _screenDirty = true;
-      return;
-    }
-
-    _powerManager.registerActivity();
-    if (_appState == AppState::Recording && _recordStopPending) {
-      _recordStopPending = false;
-      _statusText = "Listening...";
-      _screenDirty = true;
-      return;
-    }
-    if (_appState == AppState::Ready || _appState == AppState::Playing ||
-        _appState == AppState::Thinking) {
-      startRecording();
-    }
+  if (_powerManager.isInterruptible() &&
+      (_buttonA.consumePressed() || _buttonB.consumePressed())) {
+    _powerManager.beginWaking();
+    _screenDirty = true;
   }
 
-  if (M5.BtnA.wasReleased()) {
-    if (_powerManager.isWaking()) {
+  if (_powerManager.isWaking()) {
+    if (_buttonA.consumeReleased() || _buttonB.consumeReleased()) {
       _powerManager.finishWaking();
       _screenDirty = true;
-      return;
     }
-
-    if (_appState == AppState::Recording) {
-      _recordStopPending = true;
-      _recordStopDeadlineMs = millis() + kRecordingGraceMs;
-      _statusText = "Release A to send";
-      _screenDirty = true;
-    }
+    _buttonA.clearEvents();
+    _buttonB.clearEvents();
+    return;
   }
 
-  if (M5.BtnB.wasPressed()) {
-    if (_powerManager.isInterruptible()) {
-      _powerManager.beginWaking();
-      _screenDirty = true;
-      return;
-    }
+  if (_appRegion == AppRegion::Menu) {
+    handleMenuButtons();
+    return;
+  }
 
+  handleChatButtons();
+}
+
+void AppController::handleChatButtons() {
+  if (_appState == AppState::Error && _buttonA.consumeClick()) {
+    retryAfterError();
+    return;
+  }
+
+  if (_buttonB.consumeHoldStart() && _appState != AppState::Recording) {
+    openMenu(_appState == AppState::Error ? MenuState::Device : MenuState::Home);
+    return;
+  }
+
+  if (_buttonB.consumeClick()) {
     _powerManager.registerActivity();
-    clearToolText();
+    const int pageCount = currentBodyPageCount();
+    if (pageCount > 1) {
+      _bodyPageIndex = (_bodyPageIndex + 1) % pageCount;
+    } else if (!_toolText.isEmpty()) {
+      clearToolText();
+    }
     _screenDirty = true;
   }
 
-  if (M5.BtnB.wasReleased() && _powerManager.isWaking()) {
-    _powerManager.finishWaking();
-    _screenDirty = true;
+  if (_buttonA.consumeHoldStart() &&
+      (_appState == AppState::Ready || _appState == AppState::Playing ||
+       _appState == AppState::Thinking)) {
+    startRecording();
+    return;
   }
+
+  if ((_buttonA.consumeReleased() || _buttonA.consumeHoldRelease()) &&
+      _appState == AppState::Recording) {
+    stopRecording();
+  }
+}
+
+void AppController::handleMenuButtons() {
+  if (_buttonB.consumeClick()) {
+    _powerManager.registerActivity();
+    cycleMenuSelection();
+    return;
+  }
+
+  if (_buttonB.consumeHoldStart()) {
+    _powerManager.registerActivity();
+    navigateBackFromMenu();
+    return;
+  }
+
+  if (_buttonA.consumeClick()) {
+    _powerManager.registerActivity();
+    selectCurrentMenuItem();
+  }
+}
+
+void AppController::openMenu(MenuState state) {
+  _appRegion = AppRegion::Menu;
+  _menuState = state;
+  _menuSelection = 0;
+  if (state == MenuState::ResumeChat) {
+    loadConversationHistory();
+  }
+  _screenDirty = true;
+}
+
+void AppController::closeMenu() {
+  _appRegion = AppRegion::Chat;
+  _menuState = MenuState::Home;
+  _menuSelection = 0;
+  _screenDirty = true;
+}
+
+void AppController::navigateBackFromMenu() {
+  if (_menuState == MenuState::Home) {
+    closeMenu();
+    return;
+  }
+
+  openMenu(MenuState::Home);
+}
+
+void AppController::cycleMenuSelection() {
+  const int count = menuItemCount();
+  if (count <= 0) {
+    return;
+  }
+  _menuSelection = (_menuSelection + 1) % count;
+  _screenDirty = true;
+}
+
+void AppController::selectCurrentMenuItem() {
+  switch (_menuState) {
+  case MenuState::Home:
+    switch (_menuSelection) {
+    case 0:
+      closeMenu();
+      return;
+    case 1:
+      closeMenu();
+      startFreshConversation();
+      return;
+    case 2:
+      openMenu(MenuState::ResumeChat);
+      return;
+    case 3:
+      openMenu(MenuState::Device);
+      return;
+    default:
+      return;
+    }
+
+  case MenuState::Device:
+    switch (_menuSelection) {
+    case 0:
+      openMenu(MenuState::Home);
+      return;
+    case 1:
+      closeMenu();
+      startCaptivePortalFlow();
+      return;
+    case 2:
+      closeMenu();
+      checkForUpdates();
+      return;
+    case 3:
+      _live.disconnect();
+      _wifi.disconnect();
+      delay(100);
+      M5.Power.powerOff();
+      return;
+    default:
+      return;
+    }
+
+  case MenuState::ResumeChat:
+    if (_menuSelection == 0) {
+      openMenu(MenuState::Home);
+      return;
+    }
+    if (_historyCount == 0) {
+      return;
+    }
+    resumeConversation(_menuSelection - 1);
+    return;
+  }
+}
+
+int AppController::menuItemCount() const {
+  switch (_menuState) {
+  case MenuState::Home:
+  case MenuState::Device:
+    return 4;
+  case MenuState::ResumeChat:
+    return _historyCount > 0 ? 1 + _historyCount : 2;
+  }
+  return 0;
+}
+
+String AppController::menuTitle() const {
+  switch (_menuState) {
+  case MenuState::Home:
+    return "Menu";
+  case MenuState::Device:
+    return "Device";
+  case MenuState::ResumeChat:
+    return "Resume chat";
+  }
+  return "Menu";
+}
+
+String AppController::menuItemLabel(int index) const {
+  switch (_menuState) {
+  case MenuState::Home:
+    switch (index) {
+    case 0:
+      return "Go back";
+    case 1:
+      return "New chat";
+    case 2:
+      return "Resume chat";
+    case 3:
+      return "Device";
+    default:
+      return "";
+    }
+
+  case MenuState::Device:
+    switch (index) {
+    case 0:
+      return "Go back";
+    case 1:
+      return "Set up WiFi";
+    case 2:
+      return "Check updates";
+    case 3:
+      return "Turn off";
+    default:
+      return "";
+    }
+
+  case MenuState::ResumeChat:
+    if (index == 0) {
+      return "Go back";
+    }
+    if (_historyCount == 0 && index == 1) {
+      return _toolText.isEmpty() ? "No saved chats" : _toolText.substring(0, 26);
+    }
+    if (index - 1 < _historyCount) {
+      const ConversationSummary &entry = _history[index - 1];
+      const String preview =
+          entry.lastMessage.isEmpty() ? entry.chatId : entry.lastMessage;
+      return preview.substring(0, 26);
+    }
+    return "";
+  }
+
+  return "";
+}
+
+void AppController::loadConversationHistory() {
+  _historyCount = 0;
+  if (!_wifi.isConnected()) {
+    _toolText = "Connect WiFi first";
+    resetBodyPage();
+    return;
+  }
+
+  if (!_live.fetchConversationHistory(_history, kMaxConversationHistory,
+                                      _historyCount)) {
+    _toolText = "History unavailable";
+    resetBodyPage();
+    return;
+  }
+
+  if (_historyCount == 0) {
+    _toolText = "No saved chats";
+    resetBodyPage();
+  }
+}
+
+void AppController::resumeConversation(int index) {
+  if (index < 0 || index >= _historyCount) {
+    return;
+  }
+
+  const ConversationSummary &entry = _history[index];
+  _chatId = entry.chatId;
+  _settings.setChatId(_chatId);
+  _live.setChatId(_chatId);
+  _toolText = entry.lastMessage;
+  resetBodyPage();
+  closeMenu();
+  _live.disconnect();
+  setAppState(AppState::Connecting, "Restoring...");
+  _live.connect();
+}
+
+void AppController::startFreshConversation() {
+  _chatId = "";
+  _settings.clearChatId();
+  _live.setChatId("");
+  clearToolText();
+  _live.disconnect();
+  setAppState(AppState::Connecting, "New chat...");
+  _live.connect();
+}
+
+void AppController::startCaptivePortalFlow() {
+  _live.disconnect();
+  if (_wifi.startCaptivePortal()) {
+    setAppState(AppState::Connecting, "WiFi setup");
+    _toolText = "Join AP\n" + _wifi.captivePortalSsid() + "\nOpen " +
+                _wifi.captivePortalIp() + "\nSubmit WiFi form";
+  } else {
+    setErrorState(ErrorCategory::WiFiTimeout, "Portal failed",
+                  "Could not start setup AP");
+  }
+  resetBodyPage();
+  _screenDirty = true;
+}
+
+void AppController::checkForUpdates() {
+  FirmwareUpdateInfo info;
+  if (!_wifi.isConnected()) {
+    _toolText = "Offline\nCannot check updates";
+  } else if (_live.checkFirmwareUpdate(info)) {
+    if (info.available) {
+      _toolText =
+          "Update available\nv" + String(info.latestVersion) + "\n" + info.notes;
+    } else {
+      _toolText = "Up to date\nv" + String(FIRMWARE_VERSION);
+    }
+  } else {
+    _toolText = "Update check failed";
+  }
+  resetBodyPage();
+  _screenDirty = true;
 }
 
 void AppController::startRecording() {
   Serial.println("[Rec] === START RECORDING ===");
   _powerManager.registerActivity();
   clearToolText();
+  _audio.stopPlayback();
   _audio.startRecording();
   _turnComplete = false;
   _audioChunksSent = 0;
   _recordingStartMs = millis();
-  _recordStopPending = false;
-  _recordStopDeadlineMs = 0;
   _live.sendStart();
   setAppState(AppState::Recording, "Listening...");
 }
@@ -340,8 +649,6 @@ void AppController::stopRecording() {
   Serial.printf("[Rec] === STOP RECORDING === (sent %d chunks)\n",
                 _audioChunksSent);
   _audio.stopRecording();
-  _recordStopPending = false;
-  _recordStopDeadlineMs = 0;
   _live.sendStop();
   _thinkingStartMs = millis();
   setAppState(AppState::Thinking, "Thinking...");
@@ -354,11 +661,6 @@ void AppController::processRecording() {
 
   if (millis() - _recordingStartMs >= kMaxRecordingMs) {
     Serial.println("[Rec] Max recording time reached");
-    stopRecording();
-    return;
-  }
-
-  if (_recordStopPending && millis() >= _recordStopDeadlineMs) {
     stopRecording();
     return;
   }
@@ -415,9 +717,43 @@ void AppController::processThinkingTimeout() {
 }
 
 void AppController::processPower() {
-  if (_appState == AppState::Ready) {
+  if (_appRegion != AppRegion::Menu && _appState == AppState::Ready) {
     _powerManager.update();
   }
+}
+
+void AppController::processCaptivePortal() {
+  if (!_wifi.isCaptivePortalActive()) {
+    return;
+  }
+
+  String ssid;
+  if (!_wifi.consumeProvisioningSuccess(ssid)) {
+    return;
+  }
+
+  _toolText = "Saved WiFi\n" + ssid + "\nReconnecting...";
+  resetBodyPage();
+  _screenDirty = true;
+  connectNetworkStack();
+}
+
+void AppController::processAnimations() {
+  if (_appRegion == AppRegion::Menu) {
+    return;
+  }
+
+  if (_appState != AppState::Connecting && _appState != AppState::Thinking) {
+    return;
+  }
+
+  if (millis() - _lastAnimationMs < kAnimationFrameMs) {
+    return;
+  }
+
+  _lastAnimationMs = millis();
+  _animationPhase = (_animationPhase + 1) % 6;
+  _screenDirty = true;
 }
 
 void AppController::renderIfNeeded() {
@@ -444,12 +780,37 @@ DisplayState AppController::buildDisplayState() const {
   state.footerRight = _chatId.isEmpty() ? "" : _chatId.substring(0, 8);
   state.showRecordingProgress = _appState == AppState::Recording;
   state.recordingProgress = recordingProgress();
+  state.pageIndex = _bodyPageIndex;
+  state.pageCount = currentBodyPageCount();
+  state.animationPhase = _animationPhase;
+  state.showMenu = _appRegion == AppRegion::Menu;
+  if (state.showMenu) {
+    state.menuTitle = menuTitle();
+    const int count = menuItemCount();
+    const int visibleCount = min(MAX_MENU_VISIBLE_ITEMS, count);
+    const int pageStart =
+        count <= MAX_MENU_VISIBLE_ITEMS
+            ? 0
+            : min(_menuSelection, count - MAX_MENU_VISIBLE_ITEMS);
+    state.menuItemCount = visibleCount;
+    state.menuSelectedIndex = _menuSelection - pageStart;
+    state.menuHasMoreAbove = pageStart > 0;
+    state.menuHasMoreBelow = pageStart + visibleCount < count;
+    for (int i = 0; i < visibleCount; i++) {
+      state.menuItems[i] = menuItemLabel(pageStart + i);
+    }
+  }
   return state;
 }
 
 String AppController::buildBodyText() const {
   if (!_toolText.isEmpty()) {
     return _toolText;
+  }
+
+  if (_wifi.isCaptivePortalActive()) {
+    return "WiFi setup\nJoin " + _wifi.captivePortalSsid() + "\nOpen " +
+           _wifi.captivePortalIp();
   }
 
   switch (_appState) {
@@ -460,19 +821,16 @@ String AppController::buildBodyText() const {
     return _statusText + "\nSearching WiFi";
 
   case AppState::Ready:
-    return "Ready\nHold A to talk";
+    return "Ready\nHold A to talk\nHold B for menu";
 
   case AppState::Recording:
-    if (_recordStopPending) {
-      return "Listening\nRelease A to send\nPress A to keep going";
-    }
     return "Listening\nRelease A to send";
 
   case AppState::Thinking:
     return "Thinking\nWaiting for reply";
 
   case AppState::Playing:
-    return "Speaking\nPress A to interrupt";
+    return "Speaking\nHold A to interrupt";
 
   case AppState::ConfirmReset:
     return "Factory reset?\nA confirm\nB cancel";
@@ -495,6 +853,10 @@ float AppController::recordingProgress() const {
 
   return static_cast<float>(millis() - _recordingStartMs) /
          static_cast<float>(kMaxRecordingMs);
+}
+
+int AppController::currentBodyPageCount() const {
+  return _display.pageCountForText(buildBodyText());
 }
 
 String AppController::deviceStatusJson() const {

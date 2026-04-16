@@ -47,6 +47,7 @@ const DEFAULT_POWER_TIMEOUTS = {
 } as const
 
 export class LiveSession {
+	private static readonly MIN_RECONNECT_MS = 1500
 	private state: DurableObjectState
 	private env: Env
 	private deviceWs: WebSocket | null = null
@@ -57,6 +58,8 @@ export class LiveSession {
 	private currentUserText = ''
 	private currentAssistantText = ''
 	private sessionGeneration = 0
+	private lastConnectionAt = 0
+	private locationContext = ''
 	private currentTurnAudioBytes = 0
 	private currentTurnAbsSum = 0
 	private currentTurnSamples = 0
@@ -69,6 +72,12 @@ export class LiveSession {
 	}
 
 	async fetch(request: Request): Promise<Response> {
+		const now = Date.now()
+		if (now - this.lastConnectionAt < LiveSession.MIN_RECONNECT_MS) {
+			return new Response('Too many reconnects', { status: 429 })
+		}
+		this.lastConnectionAt = now
+
 		const sessionGeneration = ++this.sessionGeneration
 		await this.saveConversation()
 		this.cleanup()
@@ -77,6 +86,7 @@ export class LiveSession {
 		const url = new URL(request.url)
 		this.deviceId = url.searchParams.get('device_id') || 'unknown'
 		this.chatId = url.searchParams.get('chat_id') || crypto.randomUUID()
+		this.locationContext = buildLocationContext(request)
 
 		console.log(`[Device] Connected: device=${this.deviceId} chat=${this.chatId}`)
 
@@ -190,6 +200,10 @@ export class LiveSession {
 										'- Battery: 250mAh rechargeable',
 										'- Connectivity: WiFi 2.4GHz',
 										'- Size: 48×24×15mm — fits in a palm',
+										'',
+										this.locationContext
+											? `Approximate device location: ${this.locationContext}. Use it only when it helps answer location-sensitive requests.`
+											: '',
 										'',
 										'The user holds a button to talk and releases to hear your response.',
 										'Keep responses concise — the speaker is tiny. Be helpful, warm, and conversational.',
@@ -883,6 +897,15 @@ export class LiveSession {
 		}
 		this.resetCurrentTurnMetrics()
 	}
+}
+
+function buildLocationContext(request: Request): string {
+	const cf = (request as Request & { cf?: IncomingRequestCfProperties }).cf
+	const city = cf?.city || request.headers.get('cf-ipcity') || ''
+	const region = cf?.region || request.headers.get('cf-region') || ''
+	const country = cf?.country || request.headers.get('cf-ipcountry') || ''
+
+	return [city, region, country].filter(Boolean).join(', ')
 }
 
 // ─── Utilities ───

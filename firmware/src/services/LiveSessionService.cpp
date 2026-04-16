@@ -166,6 +166,155 @@ bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
   return false;
 }
 
+bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries[],
+                                                  int maxEntries,
+                                                  int &outCount) {
+  outCount = 0;
+  if (maxEntries <= 0) {
+    return false;
+  }
+
+  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
+    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
+    const String url = endpointBaseUrl(endpoint) + "/history/" + DEVICE_ID +
+                       "?device_id=" + DEVICE_ID;
+
+    Serial.printf("[HTTP] Fetching history from %s\n", url.c_str());
+
+    int statusCode = -1;
+    String body;
+    {
+      HTTPClient http;
+      if (endpoint.port == 443) {
+        WiFiClientSecure client;
+        if (endpoint.ca_cert) {
+          client.setCACert(endpoint.ca_cert);
+        } else {
+          client.setInsecure();
+        }
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      } else {
+        WiFiClient client;
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      }
+    }
+
+    if (statusCode != 200 || body.isEmpty()) {
+      Serial.printf("[HTTP] History fetch failed: status=%d\n", statusCode);
+      continue;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body) || !doc.is<JsonArray>()) {
+      Serial.println("[HTTP] History response invalid");
+      continue;
+    }
+
+    JsonArray rows = doc.as<JsonArray>();
+    for (JsonVariant row : rows) {
+      if (outCount >= maxEntries) {
+        break;
+      }
+
+      const char *chatId = row["chat_id"];
+      if (!chatId || !chatId[0]) {
+        continue;
+      }
+
+      outEntries[outCount].chatId = chatId;
+      outEntries[outCount].lastMessage = row["last_message"] | "";
+      outEntries[outCount].updatedAt = row["updated_at"] | "";
+      outCount++;
+    }
+    return true;
+  }
+
+  return false;
+}
+
+bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
+  outInfo = FirmwareUpdateInfo{};
+
+  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
+    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
+    const String url = endpointBaseUrl(endpoint) + "/firmware/check?version=" +
+                       String(FIRMWARE_VERSION);
+
+    Serial.printf("[HTTP] Checking firmware at %s\n", url.c_str());
+
+    int statusCode = -1;
+    String body;
+    {
+      HTTPClient http;
+      if (endpoint.port == 443) {
+        WiFiClientSecure client;
+        if (endpoint.ca_cert) {
+          client.setCACert(endpoint.ca_cert);
+        } else {
+          client.setInsecure();
+        }
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      } else {
+        WiFiClient client;
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      }
+    }
+
+    if (statusCode == 404) {
+      continue;
+    }
+
+    if (statusCode != 200 || body.isEmpty()) {
+      Serial.printf("[HTTP] Firmware check failed: status=%d\n", statusCode);
+      continue;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body)) {
+      Serial.println("[HTTP] Firmware check invalid JSON");
+      continue;
+    }
+
+    outInfo.available = doc["available"] | false;
+    outInfo.latestVersion = doc["latest_version"] | FIRMWARE_VERSION;
+    outInfo.notes = doc["notes"] | "";
+    outInfo.downloadUrl = doc["download_url"] | "";
+    return true;
+  }
+
+  return false;
+}
+
 void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
   switch (event) {
   case WebsocketsEvent::ConnectionOpened:
