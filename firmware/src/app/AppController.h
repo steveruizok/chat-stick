@@ -4,6 +4,7 @@
 #include "../power/PowerManager.h"
 #include "../services/AudioService.h"
 #include "../services/LiveSessionService.h"
+#include "../services/SettingsStore.h"
 #include "../services/WiFiService.h"
 #include "../state/StateTypes.h"
 #include "../ui/TextDisplay.h"
@@ -34,6 +35,7 @@ private:
   WiFiService _wifi;
   AudioService _audio;
   LiveSessionService _live;
+  SettingsStore _settings;
 
   void configureCallbacks();
   void connectNetworkStack();
@@ -41,6 +43,7 @@ private:
   void setAppState(AppState state, const String &status = "",
                    const String &error = "");
   void clearToolText();
+  void restoreSessionPreview();
 
   void handleButtons();
   void startRecording();

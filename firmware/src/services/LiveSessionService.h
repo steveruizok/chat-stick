@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../Config.h"
 #include <ArduinoJson.h>
 #include <Arduino.h>
 #include <ArduinoWebsockets.h>
@@ -16,6 +17,9 @@ struct LiveSessionCallbacks {
   std::function<void(const uint8_t *, size_t)> onAudio;
   std::function<void(int)> onBrightness;
   std::function<void(int)> onVolume;
+  std::function<bool(const String &)> onPlaySound;
+  std::function<bool(const String &)> onPlayMelody;
+  std::function<void()> onPowerOff;
   std::function<String()> getDeviceStatusJson;
 };
 
@@ -26,6 +30,7 @@ public:
   void disconnect();
   void poll();
   void reconnectIfNeeded(bool enabled);
+  void setChatId(const String &chatId) { _chatId = chatId; }
 
   bool isConnected() const { return _connected; }
   int activeServerIndex() const { return _activeServerIndex; }
@@ -34,10 +39,12 @@ public:
   bool sendStart();
   bool sendStop();
   bool sendAudio(const int16_t *data, size_t len);
+  bool fetchLastAssistantMessage(String &outMessage);
 
 private:
   websockets::WebsocketsClient _ws;
   LiveSessionCallbacks _callbacks;
+  String _chatId;
   bool _connected = false;
   unsigned long _lastReconnectMs = 0;
   int _nextServerIndex = 0;
@@ -49,4 +56,5 @@ private:
   void handleEvent(websockets::WebsocketsEvent event, String data);
   void handleToolCall(const ArduinoJson::JsonDocument &doc);
   void sendToolResponse(const char *name, const char *id, const String &result);
+  String endpointBaseUrl(const ServerEndpoint &endpoint) const;
 };

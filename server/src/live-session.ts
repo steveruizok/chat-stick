@@ -1,36 +1,4 @@
-import docsIndex from './docs-index.json'
-
-interface DocEntry {
-	id: string
-	title: string
-	section: string
-	keywords: string[]
-	content: string
-}
-
-function searchDocsKeyword(query: string, limit = 5): DocEntry[] {
-	const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
-	const scored: { entry: DocEntry; score: number }[] = []
-
-	for (const entry of docsIndex as DocEntry[]) {
-		let score = 0
-		const title = entry.title.toLowerCase()
-		const haystack = `${title} ${entry.keywords.join(' ')} ${entry.content}`.toLowerCase()
-		for (const term of terms) {
-			if (title === term) score += 20
-			if (title.includes(term)) score += 10
-			if (entry.keywords.some((k: string) => k.toLowerCase().includes(term))) score += 5
-			const matches = haystack.split(term).length - 1
-			if (matches > 0) score += Math.min(matches, 3)
-		}
-		// Penalize very long content (reduces false positives)
-		if (score > 0) score -= entry.content.length / 10000
-		if (score > 0) scored.push({ entry, score })
-	}
-
-	scored.sort((a, b) => b.score - a.score)
-	return scored.slice(0, limit).map((s) => s.entry)
-}
+import { searchDocsKeyword, searchDocsVector } from './docs-search'
 
 interface Env {
 	GEMINI_API_KEY: string
@@ -216,11 +184,15 @@ export class LiveSession {
 										'- set_brightness: adjust display backlight',
 										'- set_volume: adjust speaker volume',
 										'- show_text: display a message on the screen',
+										'- play_sound: play a named device sound effect',
+										'- play_melody: play a short note sequence on the device speaker',
+										'- power_off: shut the device down',
 										'- get_device_status: check battery, volume, brightness, etc.',
 										'- search_docs: search the indexed knowledge base',
 										'- web_fetch: fetch a specific URL and read its text content',
 										'- google_search: search the web for current information (news, facts, recent events)',
 										'- new_conversation: reset the chat (say goodbye first)',
+										'- new_chat: reset the chat (alias for new_conversation)',
 										'',
 										'You have a search_docs tool that searches an indexed knowledge base.',
 										'Use it when the user asks about topics that may be covered in the indexed documents.',
@@ -265,8 +237,8 @@ export class LiveSession {
 											required: ['level'],
 										},
 									},
-									{
-										name: 'show_text',
+										{
+											name: 'show_text',
 										description:
 											'Display a short text message on the device screen. Max ~20 characters per line, 7 lines.',
 										parameters: {
@@ -279,9 +251,49 @@ export class LiveSession {
 											},
 											required: ['text'],
 										},
-									},
-									{
-										name: 'get_device_status',
+										},
+										{
+											name: 'play_sound',
+											description:
+												'Play a named sound effect on the device speaker.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													sound: {
+														type: 'STRING',
+														description:
+															'One of: beep, success, error, alert, fanfare',
+													},
+												},
+												required: ['sound'],
+											},
+										},
+										{
+											name: 'play_melody',
+											description:
+												'Play a short melody on the device speaker using note tokens like "C4:200 E4:200 G4:400". Use R for rests.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													notes: {
+														type: 'STRING',
+														description:
+															'Space-separated note tokens with durations in milliseconds, for example "C4:200 E4:200 G4:400"',
+													},
+												},
+												required: ['notes'],
+											},
+										},
+										{
+											name: 'power_off',
+											description: 'Power the device off immediately.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {},
+											},
+										},
+										{
+											name: 'get_device_status',
 										description:
 											'Get current device status including battery level, volume, brightness, WiFi network, and uptime.',
 										parameters: {
@@ -326,18 +338,27 @@ export class LiveSession {
 											required: ['url'],
 										},
 									},
-									{
-										name: 'new_conversation',
+										{
+											name: 'new_conversation',
 										description:
 											'Start a fresh conversation. Call this when the user wants to reset the chat or change topics completely. Say a brief goodbye before calling this tool.',
 										parameters: {
 											type: 'OBJECT',
 											properties: {},
+											},
 										},
-									},
-								],
-							},
-						],
+										{
+											name: 'new_chat',
+											description:
+												'Start a fresh conversation. Alias for new_conversation.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {},
+											},
+										},
+									],
+								},
+							],
 					},
 				})
 			)
@@ -512,14 +533,30 @@ export class LiveSession {
 
 				if (call.name === 'search_docs') {
 					const query = (call.args as { query?: string }).query || ''
-					console.log(`[Gemini] Vector search: "${query}"`)
+					console.log(`[Gemini] Docs search: "${query}"`)
 
-					const results = searchDocsKeyword(query, 3)
-					console.log(`[Gemini] Found ${results.length} results (top: ${results[0]?.title})`)
+					let results: { title: string; section: string; content: string; score: number }[] = []
+					let searchMode: 'vector' | 'keyword' = 'vector'
+
+					try {
+						results = await searchDocsVector(query, this.env, 3)
+					} catch (err) {
+						console.warn('[Gemini] Vector search failed, falling back to keyword search:', err)
+					}
+
+					if (results.length === 0) {
+						searchMode = 'keyword'
+						results = searchDocsKeyword(query, 3)
+					}
+
+					console.log(
+						`[Gemini] Found ${results.length} ${searchMode} results (top: ${results[0]?.title})`
+					)
 					const searchResults = results.map((r) => ({
 						title: r.title,
 						section: r.section,
 						content: r.content.slice(0, 1000),
+						score: r.score,
 					}))
 					const payload = JSON.stringify({
 						toolResponse: {
@@ -541,11 +578,15 @@ export class LiveSession {
 					await this.logToolCall({
 						name: call.name,
 						args: call.args,
-						result: { count: searchResults.length, titles: searchResults.map((r) => r.title) },
+						result: {
+							mode: searchMode,
+							count: searchResults.length,
+							titles: searchResults.map((r) => r.title),
+						},
 						handledBy: 'server',
 						durationMs: Date.now() - startMs,
 					})
-					} else if (call.name === 'web_fetch' || call.name === 'fetch_url') {
+				} else if (call.name === 'web_fetch' || call.name === 'fetch_url') {
 						const args = call.args as WebFetchArgs
 						const url = args.url || ''
 						console.log(`[Gemini] Fetching: ${url}`)
@@ -572,7 +613,7 @@ export class LiveSession {
 							handledBy: 'server',
 							durationMs: Date.now() - startMs,
 						})
-					} else if (call.name === 'new_conversation') {
+				} else if (call.name === 'new_conversation' || call.name === 'new_chat') {
 						// Handle server-side: close Gemini session and open a fresh one
 						console.log('[Gemini] Resetting conversation')
 						await this.logToolCall({

@@ -70,6 +70,48 @@ export default {
 						headers: { 'Content-Type': 'application/json' },
 					})
 				}
+
+				const sessionMatch = url.pathname.match(/^\/session\/(.+)$/)
+				if (sessionMatch) {
+					const chatId = decodeURIComponent(sessionMatch[1])
+					const requestedDeviceId = url.searchParams.get('device_id') ?? ''
+					const row = await env.DB.prepare(
+						`SELECT chat_id, device_id, last_message, updated_at
+						 FROM conversations
+						 WHERE chat_id = ?
+						 LIMIT 1`
+					)
+						.bind(chatId)
+						.first<{
+							chat_id: string
+							device_id: string
+							last_message: string | null
+							updated_at: string
+						}>()
+
+					if (!row) {
+						return new Response('Not found', { status: 404, headers: corsHeaders() })
+					}
+
+					const authorized =
+						isAuthorizedHistoryRequest(request, env) ||
+						(!!requestedDeviceId && requestedDeviceId === row.device_id)
+					if (!authorized) {
+						return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
+					}
+
+					return new Response(
+						JSON.stringify({
+							chat_id: row.chat_id,
+							device_id: row.device_id,
+							last_message: row.last_message,
+							updated_at: row.updated_at,
+						}),
+						{
+							headers: { ...corsHeaders(), 'Content-Type': 'application/json' },
+						}
+					)
+				}
 				return new Response('Not found', { status: 404 })
 			}
 		}

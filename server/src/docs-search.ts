@@ -16,6 +16,39 @@ interface SearchEnv {
 const EMBEDDING_MODEL = '@cf/baai/bge-base-en-v1.5'
 const BATCH_SIZE = 20
 
+export function searchDocsKeyword(
+	query: string,
+	limit = 5
+): { title: string; section: string; content: string; score: number }[] {
+	const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
+	const scored: { entry: DocEntry; score: number }[] = []
+
+	for (const entry of docsIndex as DocEntry[]) {
+		let score = 0
+		const title = entry.title.toLowerCase()
+		const haystack = `${title} ${entry.keywords.join(' ')} ${entry.content}`.toLowerCase()
+
+		for (const term of terms) {
+			if (title === term) score += 20
+			if (title.includes(term)) score += 10
+			if (entry.keywords.some((keyword) => keyword.toLowerCase().includes(term))) score += 5
+			const matches = haystack.split(term).length - 1
+			if (matches > 0) score += Math.min(matches, 3)
+		}
+
+		if (score > 0) score -= entry.content.length / 10000
+		if (score > 0) scored.push({ entry, score })
+	}
+
+	scored.sort((a, b) => b.score - a.score)
+	return scored.slice(0, limit).map(({ entry, score }) => ({
+		title: entry.title,
+		section: entry.section,
+		content: entry.content,
+		score,
+	}))
+}
+
 // ── Index all docs into Vectorize ──
 
 export async function indexDocs(env: SearchEnv): Promise<Response> {

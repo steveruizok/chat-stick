@@ -18,10 +18,12 @@ void AppController::setup() {
   setCpuFrequencyMhz(80);
   Serial.printf("[Setup] CPU clock set to %lu MHz\n", getCpuFrequencyMhz());
 
-  _display.init();
-  _display.setBrightness(DEFAULT_BRIGHTNESS);
+  _settings.init();
 
-  _powerManager.setSavedBrightness(DEFAULT_BRIGHTNESS);
+  _display.init();
+  _display.setBrightness(_settings.brightness());
+
+  _powerManager.setSavedBrightness(_settings.brightness());
   configureCallbacks();
 
   _wifi.init();
@@ -31,6 +33,10 @@ void AppController::setup() {
     renderIfNeeded();
     return;
   }
+
+  _audio.setVolume(_settings.volume());
+  _chatId = _settings.chatId();
+  _live.setChatId(_chatId);
 
   _live.init({
       .onActivity = [this]() { _powerManager.registerActivity(); },
@@ -46,6 +52,8 @@ void AppController::setup() {
       .onChatId =
           [this](const String &chatId) {
             _chatId = chatId;
+            _settings.setChatId(chatId);
+            _live.setChatId(chatId);
             _screenDirty = true;
           },
       .onShowText =
@@ -66,9 +74,27 @@ void AppController::setup() {
       .onBrightness = [this](int level) {
         _display.setBrightness(level);
         _powerManager.setSavedBrightness(level);
+        _settings.setBrightness(level);
         _screenDirty = true;
       },
-      .onVolume = [this](int level) { _audio.setVolume(level); },
+      .onVolume = [this](int level) {
+        _audio.setVolume(level);
+        _settings.setVolume(level);
+      },
+      .onPlaySound = [this](const String &sound) {
+        _powerManager.registerActivity();
+        return _audio.playNamedSound(sound);
+      },
+      .onPlayMelody = [this](const String &notes) {
+        _powerManager.registerActivity();
+        return _audio.playMelody(notes);
+      },
+      .onPowerOff = [this]() {
+        _live.disconnect();
+        _wifi.disconnect();
+        delay(100);
+        M5.Power.powerOff();
+      },
       .getDeviceStatusJson = [this]() { return deviceStatusJson(); },
   });
 
@@ -134,6 +160,7 @@ void AppController::connectNetworkStack() {
     return;
   }
 
+  restoreSessionPreview();
   _screenDirty = true;
   _live.connect();
 }
@@ -164,6 +191,19 @@ void AppController::setAppState(AppState state, const String &status,
 }
 
 void AppController::clearToolText() { _toolText = ""; }
+
+void AppController::restoreSessionPreview() {
+  if (_chatId.isEmpty()) {
+    return;
+  }
+
+  String lastMessage;
+  if (_live.fetchLastAssistantMessage(lastMessage) && !lastMessage.isEmpty()) {
+    _toolText = lastMessage;
+    _statusText = "Restored";
+    _screenDirty = true;
+  }
+}
 
 void AppController::handleButtons() {
   if (M5.BtnA.wasPressed()) {

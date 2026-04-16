@@ -2,6 +2,9 @@
 
 #include "../Config.h"
 #include <ArduinoJson.h>
+#include <HTTPClient.h>
+#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 
 using namespace websockets;
 
@@ -18,6 +21,7 @@ void LiveSessionService::connect() {
   _nextServerIndex = (_nextServerIndex + 1) % SERVER_ENDPOINT_COUNT;
 
   const String path = String(SERVER_PATH) + "?device_id=" + DEVICE_ID;
+  const String chatQuery = _chatId.isEmpty() ? "" : "&chat_id=" + _chatId;
   const char *scheme = endpoint.port == 443 ? "wss" : "ws";
 
   if (_callbacks.onStatus) {
@@ -25,7 +29,7 @@ void LiveSessionService::connect() {
   }
 
   Serial.printf("[WS] Connecting to %s://%s:%d%s\n", scheme, endpoint.host,
-                endpoint.port, path.c_str());
+                endpoint.port, (path + chatQuery).c_str());
 
   if (endpoint.ca_cert) {
     _ws.setCACert(endpoint.ca_cert);
@@ -34,9 +38,10 @@ void LiveSessionService::connect() {
   }
 
   if (endpoint.port == 443) {
-    _connected = _ws.connectSecure(endpoint.host, endpoint.port, path.c_str());
+    _connected =
+        _ws.connectSecure(endpoint.host, endpoint.port, (path + chatQuery).c_str());
   } else {
-    _connected = _ws.connect(endpoint.host, endpoint.port, path.c_str());
+    _connected = _ws.connect(endpoint.host, endpoint.port, (path + chatQuery).c_str());
   }
 
   if (!_connected) {
@@ -86,6 +91,79 @@ bool LiveSessionService::sendStop() { return _ws.send("{\"type\":\"stop\"}"); }
 
 bool LiveSessionService::sendAudio(const int16_t *data, size_t len) {
   return _ws.sendBinary(reinterpret_cast<const char *>(data), len);
+}
+
+bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
+  outMessage = "";
+  if (_chatId.isEmpty()) {
+    return false;
+  }
+
+  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
+    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
+    const String url = endpointBaseUrl(endpoint) + "/session/" + _chatId +
+                       "?device_id=" + DEVICE_ID;
+
+    Serial.printf("[HTTP] Restoring session from %s\n", url.c_str());
+
+    int statusCode = -1;
+    String body;
+    {
+      HTTPClient http;
+      if (endpoint.port == 443) {
+        WiFiClientSecure client;
+        if (endpoint.ca_cert) {
+          client.setCACert(endpoint.ca_cert);
+        } else {
+          client.setInsecure();
+        }
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      } else {
+        WiFiClient client;
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      }
+    }
+
+    if (statusCode == 404) {
+      return false;
+    }
+
+    if (statusCode != 200 || body.isEmpty()) {
+      Serial.printf("[HTTP] Session restore failed: status=%d\n", statusCode);
+      continue;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body)) {
+      Serial.println("[HTTP] Session restore returned invalid JSON");
+      continue;
+    }
+
+    const char *lastMessage = doc["last_message"];
+    if (!lastMessage || !lastMessage[0]) {
+      return false;
+    }
+
+    outMessage = lastMessage;
+    return true;
+  }
+
+  return false;
 }
 
 void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
@@ -214,6 +292,27 @@ void LiveSessionService::handleToolCall(const JsonDocument &doc) {
       _callbacks.onShowText(text);
     }
     result = "Text displayed";
+  } else if (strcmp(name, "play_sound") == 0) {
+    const char *sound = doc["args"]["sound"];
+    const bool ok =
+        sound && _callbacks.onPlaySound && _callbacks.onPlaySound(sound);
+    result = ok ? String("Played sound: ") + sound : "Unknown sound";
+  } else if (strcmp(name, "play_melody") == 0) {
+    const char *melody = doc["args"]["notes"];
+    const bool ok =
+        melody && _callbacks.onPlayMelody && _callbacks.onPlayMelody(melody);
+    result = ok ? "Melody played" : "Invalid melody";
+  } else if (strcmp(name, "power_off") == 0) {
+    if (!_callbacks.onPowerOff) {
+      result = "Power off unavailable";
+      sendToolResponse(name, id, result);
+      return;
+    }
+
+    sendToolResponse(name, id, "Powering off");
+    delay(100);
+    _callbacks.onPowerOff();
+    return;
   }
 
   sendToolResponse(name, id, result);
@@ -231,4 +330,13 @@ void LiveSessionService::sendToolResponse(const char *name, const char *id,
   serializeJson(response, encoded);
   _ws.send(encoded.c_str());
   Serial.printf("[Tool] %s -> %s\n", name, result.c_str());
+}
+
+String LiveSessionService::endpointBaseUrl(const ServerEndpoint &endpoint) const {
+  const char *scheme = endpoint.port == 443 ? "https" : "http";
+  String url = String(scheme) + "://" + endpoint.host;
+  if (endpoint.port != 80 && endpoint.port != 443) {
+    url += ":" + String(endpoint.port);
+  }
+  return url;
 }

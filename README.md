@@ -19,6 +19,8 @@ M5StickS3 ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebS
 
 **Server** (`server/`) — Cloudflare Worker with a Durable Object (`LiveSession`) that bridges the device to Gemini's Live API. Holds conversation history in D1, routes tool calls (web fetch, web search, vector database lookups, device info and control), and manages session lifecycle.
 
+The device persists brightness, volume, and the current `chat_id` in ESP32 NVS so those settings survive reboots. On boot, it reuses the saved chat session and fetches the last assistant reply from the server before reconnecting.
+
 ## Prerequisites
 
 - [PlatformIO](https://platformio.org/install) (firmware builds)
@@ -83,6 +85,11 @@ wrangler deploy
 # Update firmware to point at the deployed endpoint
 # Update SERVER_ENDPOINTS in Config.h with your deployed worker URL
 ```
+
+## History and Session APIs
+
+- `GET /history/:deviceId` — recent conversations for a device. Requires `X-History-Token` or `?token=...`.
+- `GET /session/:chatId?device_id=...` — last saved assistant message for a chat. The firmware uses this during boot restore.
 
 ## Credentials
 
