@@ -7,7 +7,7 @@
 class TextDisplay {
 public:
   static constexpr int kCharsPerLine = 29;
-  static constexpr int kLines = 7;
+  static constexpr int kLines = 8;
 
   void init();
   void setBrightness(uint8_t brightness);
@@ -15,7 +15,8 @@ public:
   int pageCountForText(const String &text) const;
 
 private:
-  static constexpr int kBodyRows = 5;
+  static constexpr int kBodyRows = 6;
+  static constexpr int kFooterRow = 7;
 
   mutable M5Canvas _canvas;
   bool _canvasReady = false;
@@ -25,8 +26,8 @@ private:
   String spaces(int count) const;
   int wrapBodyText(const String &text, String out[], int maxRows) const;
   void drawLine(int row, const String &text, uint16_t color) const;
+  void drawGlyphAtRight(int row, char glyph, uint16_t color) const;
   void drawRecordingProgress(float progress) const;
-  void drawLoadingAnimation(uint8_t phase) const;
   void drawPageIndicator(int pageIndex, int pageCount) const;
   void drawMenu(const DisplayState &state) const;
 };

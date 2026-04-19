@@ -24,7 +24,6 @@ struct DisplayState {
   bool showRecordingProgress = false;
   float recordingProgress = 0.0f;
   bool showMenu = false;
-  String menuTitle;
   String menuItems[MAX_MENU_VISIBLE_ITEMS];
   int menuItemCount = 0;
   int menuSelectedIndex = 0;
@@ -32,5 +31,4 @@ struct DisplayState {
   bool menuHasMoreBelow = false;
   int pageIndex = 0;
   int pageCount = 1;
-  uint8_t animationPhase = 0;
 };

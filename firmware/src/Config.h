@@ -3,8 +3,10 @@
 #include <Arduino.h>
 
 // ============= Server Configuration =============
-// Try local dev first, then fall back to the deployed worker.
-// Update the LAN IP when your dev machine changes networks.
+// The dev and prod server addresses are per-user and live in credentials.h
+// (gitignored). credentials.h defines: DEVELOPMENT_SERVER_ADDRESS,
+// DEVELOPMENT_SERVER_PORT, PRODUCTION_SERVER_ADDRESS, SERVER_ENDPOINTS[],
+// and SERVER_ENDPOINT_COUNT.
 struct ServerEndpoint {
   const char *host;
   int port;
@@ -27,14 +29,6 @@ constexpr const char *GTS_ROOT_R4_CA =
     "9J+uHXqnLrmvT/aDHQ4thQEd0dlq7A/Cr8deVl5c1RxYIigL9zC2L7F8AjEA8GE8\n"
     "p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD\n"
     "-----END CERTIFICATE-----\n";
-
-constexpr ServerEndpoint SERVER_ENDPOINTS[] = {
-    {"192.168.1.100", 8787, nullptr},
-    {"m5-live.your-account.workers.dev", 443, GTS_ROOT_R4_CA},
-};
-
-constexpr int SERVER_ENDPOINT_COUNT =
-    sizeof(SERVER_ENDPOINTS) / sizeof(SERVER_ENDPOINTS[0]);
 
 constexpr const char *SERVER_PATH = "/ws";
 
@@ -70,6 +64,10 @@ constexpr int DEFAULT_VOLUME = 255;
 // StickS3 button pin map from M5Stack docs: KEY1=G11, KEY2=G12.
 constexpr gpio_num_t BUTTON_A_PIN = GPIO_NUM_11;
 constexpr gpio_num_t BUTTON_B_PIN = GPIO_NUM_12;
+
+// ============= Clock =============
+constexpr const char *NTP_SERVER = "pool.ntp.org";
+constexpr const char *LOCAL_TZ = "PST8PDT,M3.2.0,M11.1.0";
 
 // ============= Power Management =============
 constexpr unsigned long IDLE_DIM_MS = 60 * 1000;

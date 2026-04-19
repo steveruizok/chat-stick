@@ -33,7 +33,6 @@ private:
   static constexpr unsigned long kMaxRecordingMs = 30000;
   static constexpr unsigned long kResetHoldMs = 1500;
   static constexpr unsigned long kMinBootDisplayMs = 800;
-  static constexpr unsigned long kAnimationFrameMs = 120;
   static constexpr int kMaxConversationHistory = 10;
 
   AppRegion _appRegion = AppRegion::Initializing;
@@ -44,18 +43,17 @@ private:
   String _chatId;
   String _toolText;
   bool _turnComplete = false;
+  bool _turnHasAudio = false;
   bool _screenDirty = true;
   unsigned long _thinkingStartMs = 0;
   unsigned long _recordingStartMs = 0;
   unsigned long _resetHoldStartMs = 0;
   unsigned long _lastHeartbeatMs = 0;
   unsigned long _lastHeaderRefreshMs = 0;
-  unsigned long _lastAnimationMs = 0;
   int _audioChunksSent = 0;
   int _bodyPageIndex = 0;
   int _menuSelection = 0;
   int _historyCount = 0;
-  uint8_t _animationPhase = 0;
   ErrorCategory _errorCategory = ErrorCategory::None;
   AppState _resetReturnState = AppState::Ready;
   String _resetReturnStatus;
@@ -97,7 +95,6 @@ private:
   void processThinkingTimeout();
   void processPower();
   void processCaptivePortal();
-  void processAnimations();
   void renderIfNeeded();
   float recordingProgress() const;
   int currentBodyPageCount() const;
@@ -108,7 +105,6 @@ private:
   void cycleMenuSelection();
   void selectCurrentMenuItem();
   int menuItemCount() const;
-  String menuTitle() const;
   String menuItemLabel(int index) const;
   void loadConversationHistory();
   void resumeConversation(int index);
@@ -119,4 +115,5 @@ private:
   DisplayState buildDisplayState() const;
   String buildBodyText() const;
   String deviceStatusJson() const;
+  String currentTimeString() const;
 };

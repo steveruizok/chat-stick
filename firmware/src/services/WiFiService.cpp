@@ -3,6 +3,7 @@
 #include "../Config.h"
 #include "../credentials.h"
 #include <WiFi.h>
+#include <time.h>
 
 void WiFiService::init() {
   _prefsReady = _prefs.begin(kPrefsNamespace, false);
@@ -234,6 +235,7 @@ bool WiFiService::connectToNetwork(const String &ssid, const String &password,
     Serial.printf("[WiFi] Connected to %s — %s\n", ssid.c_str(),
                   WiFi.localIP().toString().c_str());
     WiFi.setSleep(WIFI_PS_MIN_MODEM);
+    configTime(0, 0, NTP_SERVER);
     return true;
   }
 

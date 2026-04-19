@@ -22,6 +22,7 @@ interface GeminiMessage {
 			}>
 		}
 		turnComplete?: boolean
+		interrupted?: boolean
 		inputTranscription?: { text: string }
 		outputTranscription?: { text: string }
 	}
@@ -48,6 +49,7 @@ const DEFAULT_POWER_TIMEOUTS = {
 
 export class LiveSession {
 	private static readonly MIN_RECONNECT_MS = 1500
+	private static readonly IDLE_CLOSE_MS = 120_000
 	private state: DurableObjectState
 	private env: Env
 	private deviceWs: WebSocket | null = null
@@ -59,6 +61,7 @@ export class LiveSession {
 	private currentAssistantText = ''
 	private sessionGeneration = 0
 	private lastConnectionAt = 0
+	private lastActivityMs = 0
 	private locationContext = ''
 	private currentTurnAudioBytes = 0
 	private currentTurnAbsSum = 0
@@ -95,6 +98,8 @@ export class LiveSession {
 
 		server.accept()
 		this.deviceWs = server
+		this.lastActivityMs = Date.now()
+		await this.state.storage.setAlarm(Date.now() + LiveSession.IDLE_CLOSE_MS)
 
 		// Send chat_id to device (in case it was server-generated)
 		this.sendToDevice({ type: 'session', chatId: this.chatId })
@@ -187,6 +192,8 @@ export class LiveSession {
 						generationConfig: {
 							responseModalities: ['AUDIO'],
 						},
+						outputAudioTranscription: {},
+						inputAudioTranscription: {},
 						systemInstruction: {
 							parts: [
 								{
@@ -407,6 +414,7 @@ export class LiveSession {
 	private static readonly SILENCE_AVG_ABS_THRESHOLD = 150
 
 	private onDeviceMessage(data: string | ArrayBuffer) {
+		this.lastActivityMs = Date.now()
 		if (data instanceof ArrayBuffer) {
 			// Binary frame = raw PCM audio from device mic
 			if (!this.geminiWs) {
@@ -451,6 +459,10 @@ export class LiveSession {
 
 				if (msg.type === 'start') {
 					this.resetCurrentTurnMetrics()
+					if (!this.geminiWs) {
+						console.log('[Bridge] Start received while Gemini closed — reconnecting')
+						this.connectGemini()
+					}
 				}
 
 				// Forward tool response to Gemini
@@ -515,6 +527,7 @@ export class LiveSession {
 	}
 
 	private async onGeminiMessage(data: string) {
+		this.lastActivityMs = Date.now()
 		let msg: GeminiMessage
 		try {
 			msg = JSON.parse(data)
@@ -555,6 +568,12 @@ export class LiveSession {
 						this.deviceWs?.send(raw)
 					}
 				}
+			}
+
+			// User interrupted — tell the device to drop any buffered model audio
+			// from the turn Gemini was generating.
+			if (sc.interrupted) {
+				this.sendToDevice({ type: 'drop_audio' })
 			}
 
 			// Turn complete — save exchange to D1
@@ -862,6 +881,27 @@ export class LiveSession {
 		)
 		console.log('[Bridge] Sent 1s trailing silence')
 		this.resetCurrentTurnMetrics()
+	}
+
+	async alarm() {
+		if (!this.geminiWs && !this.deviceWs) return
+		const idle = Date.now() - this.lastActivityMs
+		if (idle >= LiveSession.IDLE_CLOSE_MS) {
+			if (this.geminiWs) {
+				console.log(`[Session] Idle ${Math.floor(idle / 1000)}s — closing Gemini`)
+				await this.commitExchange()
+				try {
+					this.geminiWs.close()
+				} catch {
+					// ignore
+				}
+				this.geminiWs = null
+				this.geminiReady = false
+			}
+			return
+		}
+		const next = LiveSession.IDLE_CLOSE_MS - idle
+		await this.state.storage.setAlarm(Date.now() + next)
 	}
 
 	private cleanup() {

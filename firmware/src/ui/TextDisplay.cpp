@@ -39,12 +39,6 @@ void TextDisplay::render(const DisplayState &state) {
     M5.Display.setTextSize(1);
   }
 
-  if (!state.showMenu &&
-      (state.appState == AppState::Connecting ||
-       state.appState == AppState::Thinking)) {
-    drawLoadingAnimation(state.animationPhase);
-  }
-
   drawLine(0, mergeEdgeText(state.headerLeft, state.headerRight), COLOR_GRAY);
   if (state.showMenu) {
     drawMenu(state);
@@ -66,14 +60,15 @@ void TextDisplay::render(const DisplayState &state) {
     }
   }
 
-  drawLine(6, mergeEdgeText(state.footerLeft, state.footerRight), COLOR_GRAY);
+  drawLine(kFooterRow, mergeEdgeText(state.footerLeft, state.footerRight),
+           COLOR_GRAY);
 
   if (state.showRecordingProgress) {
     drawRecordingProgress(state.recordingProgress);
   }
 
   if (_canvasReady) {
-    _canvas.pushSprite(0, 0);
+    _canvas.pushSprite(&M5.Display, 0, 0);
   }
 }
 
@@ -226,6 +221,20 @@ void TextDisplay::drawLine(int row, const String &text, uint16_t color) const {
   M5.Display.print(fitLine(text));
 }
 
+void TextDisplay::drawGlyphAtRight(int row, char glyph, uint16_t color) const {
+  const int x = 4 + (kCharsPerLine - 1) * 8;
+  const int y = row * LINE_HEIGHT;
+  if (_canvasReady) {
+    _canvas.setTextColor(color);
+    _canvas.setCursor(x, y);
+    _canvas.print(glyph);
+    return;
+  }
+  M5.Display.setTextColor(color);
+  M5.Display.setCursor(x, y);
+  M5.Display.print(glyph);
+}
+
 void TextDisplay::drawRecordingProgress(float progress) const {
   const int barWidth = 8;
   const int margin = 2;
@@ -252,25 +261,6 @@ void TextDisplay::drawRecordingProgress(float progress) const {
   }
 }
 
-void TextDisplay::drawLoadingAnimation(uint8_t phase) const {
-  const int offset = (phase % 6) * 10;
-  for (int x = -SCREEN_HEIGHT_PX; x < SCREEN_WIDTH_PX + SCREEN_HEIGHT_PX;
-       x += 28) {
-    const int shifted = x + offset;
-    if (_canvasReady) {
-      _canvas.drawLine(shifted, 0, shifted + SCREEN_HEIGHT_PX, SCREEN_HEIGHT_PX,
-                       COLOR_DARK_GRAY);
-      _canvas.drawLine(shifted + 2, 0, shifted + SCREEN_HEIGHT_PX + 2,
-                       SCREEN_HEIGHT_PX, COLOR_GRAY);
-    } else {
-      M5.Display.drawLine(shifted, 0, shifted + SCREEN_HEIGHT_PX,
-                          SCREEN_HEIGHT_PX, COLOR_DARK_GRAY);
-      M5.Display.drawLine(shifted + 2, 0, shifted + SCREEN_HEIGHT_PX + 2,
-                          SCREEN_HEIGHT_PX, COLOR_GRAY);
-    }
-  }
-}
-
 void TextDisplay::drawPageIndicator(int pageIndex, int pageCount) const {
   if (pageCount <= 1) {
     return;
@@ -291,50 +281,19 @@ void TextDisplay::drawPageIndicator(int pageIndex, int pageCount) const {
 }
 
 void TextDisplay::drawMenu(const DisplayState &state) const {
-  drawLine(1, fitLine(state.menuTitle), COLOR_BLUE);
-
-  const int startRow = 6 - state.menuItemCount;
+  const int startRow = kLines - state.menuItemCount;
   for (int i = 0; i < state.menuItemCount; i++) {
     const int row = startRow + i;
     const bool selected = i == state.menuSelectedIndex;
-    if (selected) {
-      const int y = row * LINE_HEIGHT + 4;
-      if (_canvasReady) {
-        _canvas.fillTriangle(2, y + 6, 8, y + 1, 8, y + 11, COLOR_WHITE);
-      } else {
-        M5.Display.fillTriangle(2, y + 6, 8, y + 1, 8, y + 11, COLOR_WHITE);
-      }
-    }
-    drawLine(row, String(selected ? " " : "  ") + state.menuItems[i],
+    const String prefix = selected ? "> " : "  ";
+    drawLine(row, prefix + state.menuItems[i],
              selected ? COLOR_WHITE : COLOR_GRAY);
   }
 
-  const int indicatorX = SCREEN_WIDTH_PX - 10;
   if (state.menuHasMoreAbove) {
-    if (_canvasReady) {
-      _canvas.fillTriangle(indicatorX, 22, indicatorX - 4, 28, indicatorX + 4,
-                           28, COLOR_GRAY);
-    } else {
-      M5.Display.fillTriangle(indicatorX, 22, indicatorX - 4, 28,
-                              indicatorX + 4, 28, COLOR_GRAY);
-    }
+    drawGlyphAtRight(startRow - 1 >= 1 ? startRow - 1 : 1, 'v', COLOR_GRAY);
   }
   if (state.menuHasMoreBelow) {
-    if (_canvasReady) {
-      _canvas.fillTriangle(indicatorX, SCREEN_HEIGHT_PX - 22, indicatorX - 4,
-                           SCREEN_HEIGHT_PX - 28, indicatorX + 4,
-                           SCREEN_HEIGHT_PX - 28, COLOR_GRAY);
-    } else {
-      M5.Display.fillTriangle(indicatorX, SCREEN_HEIGHT_PX - 22,
-                              indicatorX - 4, SCREEN_HEIGHT_PX - 28,
-                              indicatorX + 4, SCREEN_HEIGHT_PX - 28,
-                              COLOR_GRAY);
-    }
-  } else {
-    if (_canvasReady) {
-      _canvas.fillCircle(indicatorX, SCREEN_HEIGHT_PX - 25, 2, COLOR_GRAY);
-    } else {
-      M5.Display.fillCircle(indicatorX, SCREEN_HEIGHT_PX - 25, 2, COLOR_GRAY);
-    }
+    drawGlyphAtRight(kLines - 1, 'v', COLOR_GRAY);
   }
 }

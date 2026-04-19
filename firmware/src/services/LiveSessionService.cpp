@@ -1,6 +1,6 @@
 #include "LiveSessionService.h"
 
-#include "../Config.h"
+#include "../credentials.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClient.h>
@@ -387,6 +387,14 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     return;
   }
 
+  if (strcmp(type, "drop_audio") == 0) {
+    Serial.println("[Server] Drop audio (interrupted)");
+    if (_callbacks.onDropAudio) {
+      _callbacks.onDropAudio();
+    }
+    return;
+  }
+
   if (strcmp(type, "settings") == 0) {
     if (_callbacks.onPowerTimeouts) {
       _callbacks.onPowerTimeouts(doc["power"]["dim_ms"] | IDLE_DIM_MS,
@@ -406,8 +414,13 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "transcript") == 0) {
-    Serial.printf("[Transcript] %s: %s\n", doc["source"].as<const char *>(),
-                  doc["text"].as<const char *>());
+    const char *source = doc["source"];
+    const char *text = doc["text"];
+    Serial.printf("[Transcript] %s: %s\n", source ? source : "?",
+                  text ? text : "");
+    if (_callbacks.onTranscript && source && text) {
+      _callbacks.onTranscript(String(source), String(text));
+    }
     return;
   }
 

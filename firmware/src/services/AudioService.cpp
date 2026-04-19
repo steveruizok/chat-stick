@@ -217,6 +217,8 @@ void AudioService::stopPlayback() {
   M5.Speaker.stop();
   _chunkInFlight = false;
   _playbackStarted = false;
+  _playReadPos = 0;
+  _playWritePos = 0;
 }
 
 void AudioService::beginSpeaker() {

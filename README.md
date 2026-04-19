@@ -48,6 +48,9 @@ wrangler d1 create m5-live-conversations
 # Apply migrations
 wrangler d1 migrations apply --local
 
+# Create the Vectorize index (768 dims for @cf/baai/bge-base-en-v1.5)
+wrangler vectorize create chat-stick-docs --dimensions=768 --metric=cosine
+
 # Run locally
 npm run dev
 ```
@@ -57,13 +60,14 @@ npm run dev
 ```bash
 cd firmware
 
-# Copy the credentials template and fill in your WiFi networks
+# Copy the credentials template and fill in your values
 cp src/credentials.h.example src/credentials.h
-# Edit src/credentials.h with your WiFi SSIDs and passwords
+# Edit src/credentials.h:
+#   - DEVELOPMENT_SERVER_ADDRESS: LAN IP of your `wrangler dev` machine
+#   - PRODUCTION_SERVER_ADDRESS:  your deployed worker, e.g. m5-live.<you>.workers.dev
+#   - WIFI_NETWORKS: your WiFi SSIDs and passwords
 
-# Update src/Config.h if needed:
-#   - SERVER_ENDPOINTS: set your local dev IP or deployed worker URL
-#   - upload_port/monitor_port in platformio.ini: set to your device's serial port
+# Update upload_port/monitor_port in platformio.ini to your device's serial port
 
 # Build and upload
 pio run -t upload
@@ -83,7 +87,7 @@ wrangler secret put HISTORY_API_TOKEN
 wrangler deploy
 
 # Update firmware to point at the deployed endpoint
-# Update SERVER_ENDPOINTS in Config.h with your deployed worker URL
+# Set PRODUCTION_SERVER_ADDRESS in firmware/src/credentials.h to your worker's hostname
 ```
 
 ## History and Session APIs
@@ -98,7 +102,7 @@ All secrets are gitignored. You need to create these files locally:
 | File                         | Purpose                          | Template                             |
 | ---------------------------- | -------------------------------- | ------------------------------------ |
 | `server/.dev.vars`           | Gemini API key, history token    | `server/.dev.vars.example`           |
-| `firmware/src/credentials.h` | WiFi network SSIDs and passwords | `firmware/src/credentials.h.example` |
+| `firmware/src/credentials.h` | Server addresses + WiFi SSIDs/passwords | `firmware/src/credentials.h.example` |
 
 Never commit credentials. The `.gitignore` is configured to exclude these files.
 

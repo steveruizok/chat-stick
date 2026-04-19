@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <M5Unified.h>
 #include <WiFi.h>
+#include <time.h>
 
 void AppController::setup() {
   const unsigned long bootStartMs = millis();
@@ -18,6 +19,9 @@ void AppController::setup() {
 
   setCpuFrequencyMhz(80);
   Serial.printf("[Setup] CPU clock set to %lu MHz\n", getCpuFrequencyMhz());
+
+  setenv("TZ", LOCAL_TZ, 1);
+  tzset();
 
   _settings.init();
 
@@ -51,7 +55,21 @@ void AppController::setup() {
     _appRegion = AppRegion::Chat;
     setAppState(AppState::Ready, "Ready");
   };
-  callbacks.onTurnComplete = [this]() { _turnComplete = true; };
+  callbacks.onTurnComplete = [this]() {
+    // Ignore turnComplete signals that arrive before any audio for the current
+    // turn — they're stale from a prior turn that the user interrupted.
+    if (_turnHasAudio) {
+      _turnComplete = true;
+    }
+  };
+  callbacks.onDropAudio = [this]() {
+    // Gemini detected a user interrupt mid-response. Flush any queued tail of
+    // the prior turn so it doesn't play into the new one. Don't change state —
+    // the user is mid-recording; release will drive the next transition.
+    _audio.stopPlayback();
+    _turnComplete = false;
+    _turnHasAudio = false;
+  };
   callbacks.onChatId = [this](const String &chatId) {
     _chatId = chatId;
     _settings.setChatId(chatId);
@@ -63,6 +81,14 @@ void AppController::setup() {
     resetBodyPage();
     _screenDirty = true;
   };
+  callbacks.onTranscript = [this](const String &source, const String &text) {
+    if (source != "model") {
+      return;
+    }
+    _toolText += text;
+    resetBodyPage();
+    _screenDirty = true;
+  };
   callbacks.onError = [this](const String &category, const String &error) {
     const ErrorCategory mapped = category == "gemini_unavailable"
                                      ? ErrorCategory::GeminiUnavailable
@@ -71,6 +97,7 @@ void AppController::setup() {
   };
   callbacks.onIgnoredAudio = [this](const String &reason) {
     _turnComplete = false;
+    _turnHasAudio = false;
     _audio.stopPlayback();
     setAppState(AppState::Ready, "Ready");
     _toolText =
@@ -81,6 +108,7 @@ void AppController::setup() {
   callbacks.onAudio = [this](const uint8_t *data, size_t len) {
     if (_appState != AppState::Recording) {
       _audio.queuePlayback(data, len);
+      _turnHasAudio = true;
     }
   };
   callbacks.onBrightness = [this](int level) {
@@ -162,7 +190,6 @@ void AppController::loop() {
   processThinkingTimeout();
   processPower();
   processCaptivePortal();
-  processAnimations();
   renderIfNeeded();
   delay(1);
 }
@@ -356,15 +383,14 @@ void AppController::handleChatButtons() {
     _screenDirty = true;
   }
 
-  if (_buttonA.consumeHoldStart() &&
+  if (_buttonA.consumePressed() &&
       (_appState == AppState::Ready || _appState == AppState::Playing ||
        _appState == AppState::Thinking)) {
     startRecording();
     return;
   }
 
-  if ((_buttonA.consumeReleased() || _buttonA.consumeHoldRelease()) &&
-      _appState == AppState::Recording) {
+  if (_buttonA.consumeReleased() && _appState == AppState::Recording) {
     stopRecording();
   }
 }
@@ -491,18 +517,6 @@ int AppController::menuItemCount() const {
   return 0;
 }
 
-String AppController::menuTitle() const {
-  switch (_menuState) {
-  case MenuState::Home:
-    return "Menu";
-  case MenuState::Device:
-    return "Device";
-  case MenuState::ResumeChat:
-    return "Resume chat";
-  }
-  return "Menu";
-}
-
 String AppController::menuItemLabel(int index) const {
   switch (_menuState) {
   case MenuState::Home:
@@ -510,7 +524,7 @@ String AppController::menuItemLabel(int index) const {
     case 0:
       return "Go back";
     case 1:
-      return "New chat";
+      return "New conversation";
     case 2:
       return "Resume chat";
     case 3:
@@ -639,10 +653,12 @@ void AppController::startRecording() {
   _audio.stopPlayback();
   _audio.startRecording();
   _turnComplete = false;
+  _turnHasAudio = false;
   _audioChunksSent = 0;
   _recordingStartMs = millis();
   _live.sendStart();
   setAppState(AppState::Recording, "Listening...");
+  renderIfNeeded();
 }
 
 void AppController::stopRecording() {
@@ -696,8 +712,13 @@ void AppController::processPlayback() {
     _audio.advancePlayback();
   }
 
-  if (_turnComplete && _audio.playbackIdle()) {
+  // Only exit to Ready from Playing — a turnComplete that arrives while we're
+  // still Thinking (e.g. a stale signal from a prior, interrupted turn) must
+  // not short-circuit waiting for the new response's audio.
+  if (_appState == AppState::Playing && _turnComplete &&
+      _audio.playbackIdle()) {
     _turnComplete = false;
+    _turnHasAudio = false;
     _audio.stopPlayback();
     setAppState(AppState::Ready, "Ready");
   }
@@ -711,6 +732,7 @@ void AppController::processThinkingTimeout() {
   if (millis() - _thinkingStartMs > kThinkingTimeoutMs) {
     Serial.println("[Loop] Thinking timeout");
     _turnComplete = false;
+    _turnHasAudio = false;
     _audio.stopPlayback();
     setAppState(AppState::Ready, "Ready");
   }
@@ -738,24 +760,6 @@ void AppController::processCaptivePortal() {
   connectNetworkStack();
 }
 
-void AppController::processAnimations() {
-  if (_appRegion == AppRegion::Menu) {
-    return;
-  }
-
-  if (_appState != AppState::Connecting && _appState != AppState::Thinking) {
-    return;
-  }
-
-  if (millis() - _lastAnimationMs < kAnimationFrameMs) {
-    return;
-  }
-
-  _lastAnimationMs = millis();
-  _animationPhase = (_animationPhase + 1) % 6;
-  _screenDirty = true;
-}
-
 void AppController::renderIfNeeded() {
   if (!_screenDirty) {
     return;
@@ -768,7 +772,14 @@ void AppController::renderIfNeeded() {
 DisplayState AppController::buildDisplayState() const {
   DisplayState state;
   state.appState = _appState;
-  state.headerLeft = _live.activeEndpointLabel();
+
+  const bool homeMenuVisible =
+      _appRegion == AppRegion::Menu && _menuState == MenuState::Home;
+  if (homeMenuVisible) {
+    state.headerLeft = currentTimeString();
+  } else {
+    state.headerLeft = _live.activeEndpointLabel();
+  }
 
   const int battery = M5.Power.getBatteryLevel();
   if (battery >= 0 && battery <= 100) {
@@ -782,10 +793,8 @@ DisplayState AppController::buildDisplayState() const {
   state.recordingProgress = recordingProgress();
   state.pageIndex = _bodyPageIndex;
   state.pageCount = currentBodyPageCount();
-  state.animationPhase = _animationPhase;
   state.showMenu = _appRegion == AppRegion::Menu;
   if (state.showMenu) {
-    state.menuTitle = menuTitle();
     const int count = menuItemCount();
     const int visibleCount = min(MAX_MENU_VISIBLE_ITEMS, count);
     const int pageStart =
@@ -857,6 +866,25 @@ float AppController::recordingProgress() const {
 
 int AppController::currentBodyPageCount() const {
   return _display.pageCountForText(buildBodyText());
+}
+
+String AppController::currentTimeString() const {
+  time_t now = time(nullptr);
+  struct tm local;
+  if (!localtime_r(&now, &local)) {
+    return "";
+  }
+  if (local.tm_year + 1900 < 2024) {
+    return "";
+  }
+  int hour12 = local.tm_hour % 12;
+  if (hour12 == 0) {
+    hour12 = 12;
+  }
+  const char *suffix = local.tm_hour < 12 ? "AM" : "PM";
+  char buf[10];
+  snprintf(buf, sizeof(buf), "%d:%02d%s", hour12, local.tm_min, suffix);
+  return String(buf);
 }
 
 String AppController::deviceStatusJson() const {

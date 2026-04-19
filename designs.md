@@ -246,8 +246,8 @@ Events:
 
 ```
 ┌──────────────────────────────┐
-│ device measures just          │
-│ 48x24x15mm and weighs 15g.  │
+│ device measures just         │
+│ 48x24x15mm and weighs 15g.   │
 │                              │
 │                              │
 │                              │
@@ -415,8 +415,8 @@ Events:
 ```
 ┌──────────────────────────────┐
 │ 10:47AM                  65% │  ← status bar: time + battery
-│                              │
-│                              │
+│ wifiname            2640ffab │  ← status bar 2: wifi name, thread id
+│ dev                          │  ← shown only when connected to the dev server
 │                              │
 │ ▸ Go back                    │
 │   New conversation           │
@@ -1066,13 +1066,13 @@ Visual: two closed "eyes" (short horizontal lines) centered; floating z/Z glyphs
 
 Power management dims or disables the display based on idle time. Power timers only advance while in the Ready state.
 
-| State | Trigger | Display | WiFi |
-|---|---|---|---|
-| Active | User activity | Full brightness | On |
-| Dimmed | 60s idle | Reduced brightness (48) | On |
-| ScreenOff | 2 min idle | Display off (0) | On |
-| LightSleep | 5 min idle | Display off | Off |
-| PowerOff | 10 min idle | Device off | Off |
+| State      | Trigger       | Display                 | WiFi |
+| ---------- | ------------- | ----------------------- | ---- |
+| Active     | User activity | Full brightness         | On   |
+| Dimmed     | 60s idle      | Reduced brightness (48) | On   |
+| ScreenOff  | 2 min idle    | Display off (0)         | On   |
+| LightSleep | 5 min idle    | Display off             | Off  |
+| PowerOff   | 10 min idle   | Device off              | Off  |
 
 Waking from Dimmed/ScreenOff/LightSleep:
 
