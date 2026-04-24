@@ -7,11 +7,7 @@ namespace {
 constexpr uint16_t COLOR_BLACK = 0x0000;
 constexpr uint16_t COLOR_WHITE = 0xFFFF;
 constexpr uint16_t COLOR_GRAY = 0x7BEF;
-constexpr uint16_t COLOR_DARK_GRAY = 0x39E7;
-constexpr uint16_t COLOR_RED = 0xF800;
-constexpr uint16_t COLOR_BLUE = 0x041F;
 constexpr int LINE_HEIGHT = 16;
-constexpr int PAGE_DOT_RADIUS = 2;
 } // namespace
 
 void TextDisplay::init() {
@@ -39,32 +35,39 @@ void TextDisplay::render(const DisplayState &state) {
     M5.Display.setTextSize(1);
   }
 
-  drawLine(0, mergeEdgeText(state.headerLeft, state.headerRight), COLOR_GRAY);
+  const bool hasHeader = !state.headerLeft.isEmpty() || !state.headerRight.isEmpty();
+  const bool hasFooterText =
+      !state.footerLeft.isEmpty() || !state.footerRight.isEmpty();
+  if (hasHeader) {
+    drawLine(0, mergeEdgeText(state.headerLeft, state.headerRight), COLOR_GRAY);
+  }
+
   if (state.showMenu) {
     drawMenu(state);
   } else {
+    const int bodyStart = hasHeader ? 1 : 0;
+    const int bodyEnd = kLines - 1;
+    const int bodyRows = bodyEnd - bodyStart;
     String wrapped[32];
     const int wrappedCount = wrapBodyText(state.bodyText, wrapped, 32);
-    const int pageCount =
-        max(1, (wrappedCount + kBodyRows - 1) / kBodyRows);
+    const int pageCount = max(1, (wrappedCount + bodyRows - 1) / bodyRows);
     const int safePageIndex =
         constrain(state.pageIndex, 0, max(0, pageCount - 1));
+    const uint16_t bodyColor = state.bodyDim ? COLOR_GRAY : COLOR_WHITE;
 
-    for (int i = 0; i < kBodyRows; i++) {
-      const int lineIndex = safePageIndex * kBodyRows + i;
-      drawLine(i + 1, lineIndex < wrappedCount ? wrapped[lineIndex] : "",
-               COLOR_WHITE);
+    for (int i = 0; i < bodyRows; i++) {
+      const int lineIndex = safePageIndex * bodyRows + i;
+      drawLine(bodyStart + i,
+               lineIndex < wrappedCount ? wrapped[lineIndex] : "", bodyColor);
     }
     if (pageCount > 1) {
       drawPageIndicator(safePageIndex, pageCount);
     }
   }
 
-  drawLine(kFooterRow, mergeEdgeText(state.footerLeft, state.footerRight),
-           COLOR_GRAY);
-
-  if (state.showRecordingProgress) {
-    drawRecordingProgress(state.recordingProgress);
+  if (hasFooterText) {
+    drawLine(kFooterRow, mergeEdgeText(state.footerLeft, state.footerRight),
+             COLOR_GRAY);
   }
 
   if (_canvasReady) {
@@ -235,49 +238,12 @@ void TextDisplay::drawGlyphAtRight(int row, char glyph, uint16_t color) const {
   M5.Display.print(glyph);
 }
 
-void TextDisplay::drawRecordingProgress(float progress) const {
-  const int barWidth = 8;
-  const int margin = 2;
-  const int x = SCREEN_WIDTH_PX - barWidth - margin;
-  const int y = margin;
-  const int height = SCREEN_HEIGHT_PX - (margin * 2);
-  const int clampedHeight =
-      constrain(static_cast<int>(height * constrain(progress, 0.0f, 1.0f)), 0,
-                height);
-
-  if (_canvasReady) {
-    _canvas.drawRect(x, y, barWidth, height, COLOR_GRAY);
-  } else {
-    M5.Display.drawRect(x, y, barWidth, height, COLOR_GRAY);
-  }
-  if (clampedHeight > 2) {
-    if (_canvasReady) {
-      _canvas.fillRect(x + 1, y + height - clampedHeight + 1, barWidth - 2,
-                       clampedHeight - 2, COLOR_RED);
-    } else {
-      M5.Display.fillRect(x + 1, y + height - clampedHeight + 1, barWidth - 2,
-                          clampedHeight - 2, COLOR_RED);
-    }
-  }
-}
-
 void TextDisplay::drawPageIndicator(int pageIndex, int pageCount) const {
   if (pageCount <= 1) {
     return;
   }
-
-  const int totalWidth = pageCount * (PAGE_DOT_RADIUS * 2 + 4) - 4;
-  int x = (SCREEN_WIDTH_PX - totalWidth) / 2;
-  const int y = SCREEN_HEIGHT_PX - 8;
-  for (int i = 0; i < pageCount; i++) {
-    const uint16_t color = i == pageIndex ? COLOR_WHITE : COLOR_DARK_GRAY;
-    if (_canvasReady) {
-      _canvas.fillCircle(x + PAGE_DOT_RADIUS, y, PAGE_DOT_RADIUS, color);
-    } else {
-      M5.Display.fillCircle(x + PAGE_DOT_RADIUS, y, PAGE_DOT_RADIUS, color);
-    }
-    x += PAGE_DOT_RADIUS * 2 + 4;
-  }
+  const bool lastPage = pageIndex >= pageCount - 1;
+  drawGlyphAtRight(kFooterRow, lastPage ? 'o' : 'v', COLOR_GRAY);
 }
 
 void TextDisplay::drawMenu(const DisplayState &state) const {

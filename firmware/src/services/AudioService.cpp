@@ -222,7 +222,60 @@ void AudioService::stopPlayback() {
 }
 
 void AudioService::beginSpeaker() {
+  M5.Speaker.end();
+  auto cfg = M5.Speaker.config();
+  if (_useExternalSpeaker) {
+    // HAT SPK2 (MAX98357 I2S) on the StickS3 HAT header.
+    // Header positions map StickC+2's G26/G25/G0 → StickS3's G0/G1/G8.
+    cfg.pin_data_out = GPIO_NUM_1;
+    cfg.pin_bck = GPIO_NUM_0;
+    cfg.pin_ws = GPIO_NUM_8;
+    cfg.pin_mck = I2S_PIN_NO_CHANGE;
+    cfg.i2s_port = I2S_NUM_1;
+    cfg.stereo = false;
+    cfg.use_dac = false;
+    cfg.buzzer = false;
+    cfg.magnification = _externalSpeakerGain;
+  } else {
+    // StickS3 internal speaker defaults.
+    cfg.pin_data_out = GPIO_NUM_14;
+    cfg.pin_bck = GPIO_NUM_17;
+    cfg.pin_ws = GPIO_NUM_15;
+    cfg.pin_mck = GPIO_NUM_18;
+    cfg.i2s_port = I2S_NUM_0;
+    cfg.stereo = true;
+    cfg.use_dac = false;
+    cfg.buzzer = false;
+  }
+  M5.Speaker.config(cfg);
   M5.Speaker.begin();
+}
+
+void AudioService::setUseExternalSpeaker(bool enabled) {
+  if (_useExternalSpeaker == enabled) {
+    return;
+  }
+  _useExternalSpeaker = enabled;
+  Serial.printf("[Audio] External speaker %s\n", enabled ? "enabled" : "disabled");
+  if (_playBuffer != nullptr) {
+    stopPlayback();
+    beginSpeaker();
+    setVolume(_volume);
+  }
+}
+
+void AudioService::setExternalSpeakerGain(int gain) {
+  const int clamped = constrain(gain, 1, 64);
+  if (_externalSpeakerGain == clamped) {
+    return;
+  }
+  _externalSpeakerGain = clamped;
+  Serial.printf("[Audio] External speaker gain set to %d\n", _externalSpeakerGain);
+  if (_useExternalSpeaker && _playBuffer != nullptr) {
+    stopPlayback();
+    beginSpeaker();
+    setVolume(_volume);
+  }
 }
 
 void AudioService::compactPlaybackBuffer() {

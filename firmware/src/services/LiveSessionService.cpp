@@ -22,6 +22,8 @@ void LiveSessionService::connect() {
 
   const String path = String(SERVER_PATH) + "?device_id=" + DEVICE_ID;
   const String chatQuery = _chatId.isEmpty() ? "" : "&chat_id=" + _chatId;
+  const String voiceQuery = _voice.isEmpty() ? "" : "&voice=" + _voice;
+  const String fullPath = path + chatQuery + voiceQuery;
   const char *scheme = endpoint.port == 443 ? "wss" : "ws";
 
   if (_callbacks.onStatus) {
@@ -29,7 +31,7 @@ void LiveSessionService::connect() {
   }
 
   Serial.printf("[WS] Connecting to %s://%s:%d%s\n", scheme, endpoint.host,
-                endpoint.port, (path + chatQuery).c_str());
+                endpoint.port, fullPath.c_str());
 
   if (endpoint.ca_cert) {
     _ws.setCACert(endpoint.ca_cert);
@@ -39,9 +41,9 @@ void LiveSessionService::connect() {
 
   if (endpoint.port == 443) {
     _connected =
-        _ws.connectSecure(endpoint.host, endpoint.port, (path + chatQuery).c_str());
+        _ws.connectSecure(endpoint.host, endpoint.port, fullPath.c_str());
   } else {
-    _connected = _ws.connect(endpoint.host, endpoint.port, (path + chatQuery).c_str());
+    _connected = _ws.connect(endpoint.host, endpoint.port, fullPath.c_str());
   }
 
   if (!_connected) {
@@ -441,6 +443,18 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     if (_callbacks.onIgnoredAudio) {
       _callbacks.onIgnoredAudio(reason ? reason : "ignored");
     }
+    return;
+  }
+
+  if (strcmp(type, "voice_changed") == 0) {
+    const char *voice = doc["voice"];
+    if (voice && *voice) {
+      _voice = voice;
+      Serial.printf("[Server] Voice changed to %s\n", voice);
+      if (_callbacks.onVoiceChanged) {
+        _callbacks.onVoiceChanged(String(voice));
+      }
+    }
   }
 }
 
@@ -469,6 +483,30 @@ void LiveSessionService::handleToolCall(const JsonDocument &doc) {
       _callbacks.onVolume(level);
     }
     result = String("Volume set to ") + level;
+  } else if (strcmp(name, "set_speaker") == 0) {
+    const char *mode = doc["args"]["mode"];
+    if (!mode) {
+      result = "Missing mode (use 'internal' or 'external')";
+    } else if (!_callbacks.onSetSpeaker) {
+      result = "Speaker control unavailable";
+    } else if (_callbacks.onSetSpeaker(mode)) {
+      result = String("Speaker set to ") + mode;
+    } else {
+      result = "Invalid mode (use 'internal' or 'external')";
+    }
+  } else if (strcmp(name, "set_external_speaker_gain") == 0) {
+    if (!doc["args"]["gain"].is<int>()) {
+      result = "Missing gain (integer 1..64)";
+    } else if (!_callbacks.onSetExternalGain) {
+      result = "Gain control unavailable";
+    } else {
+      const int gain = doc["args"]["gain"].as<int>();
+      if (_callbacks.onSetExternalGain(gain)) {
+        result = String("External speaker gain set to ") + constrain(gain, 1, 64);
+      } else {
+        result = "Gain out of range (use 1..64)";
+      }
+    }
   } else if (strcmp(name, "get_device_status") == 0) {
     result = _callbacks.getDeviceStatusJson ? _callbacks.getDeviceStatusJson()
                                             : "{}";

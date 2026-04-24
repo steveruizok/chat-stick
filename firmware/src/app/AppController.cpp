@@ -25,6 +25,24 @@ void AppController::setup() {
 
   _settings.init();
 
+  const m5pm1_err_t pm1BeginRc = _pm1.begin(&M5.In_I2C);
+  if (pm1BeginRc == M5PM1_OK) {
+    _pm1Ready = true;
+    _pm1.setSingleResetDisable(true);
+    const m5pm1_err_t chgRc = _pm1.setChargeEnable(true);
+    m5pm1_irq_btn_t drain;
+    _pm1.irqGetBtnStatusEnum(&drain, M5PM1_CLEAN_ALL);
+    uint16_t vbat = 0, vin = 0;
+    m5pm1_pwr_src_t src = M5PM1_PWR_SRC_UNKNOWN;
+    _pm1.readVbat(&vbat);
+    _pm1.readVin(&vin);
+    _pm1.getPowerSource(&src);
+    Serial.printf("[PM1] init OK; chargeEnable rc=%d vbat=%u vin=%u src=%d\n",
+                  static_cast<int>(chgRc), vbat, vin, static_cast<int>(src));
+  } else {
+    Serial.printf("[PM1] init failed rc=%d\n", static_cast<int>(pm1BeginRc));
+  }
+
   _display.init();
   _display.setBrightness(_settings.brightness());
 
@@ -33,6 +51,8 @@ void AppController::setup() {
 
   _wifi.init();
 
+  _audio.setExternalSpeakerGain(_settings.externalSpeakerGain());
+  _audio.setUseExternalSpeaker(_settings.useExternalSpeaker());
   if (!_audio.init()) {
     setErrorState(ErrorCategory::Startup, "Startup failed",
                   "Audio buffer unavailable");
@@ -43,6 +63,7 @@ void AppController::setup() {
   _audio.setVolume(_settings.volume());
   _chatId = _settings.chatId();
   _live.setChatId(_chatId);
+  _live.setVoice(_settings.voice());
 
   LiveSessionCallbacks callbacks;
   callbacks.onActivity = [this]() { _powerManager.registerActivity(); };
@@ -77,6 +98,7 @@ void AppController::setup() {
     _screenDirty = true;
   };
   callbacks.onShowText = [this](const String &text) {
+    _pendingTurnReset = false;
     _toolText = text;
     resetBodyPage();
     _screenDirty = true;
@@ -84,6 +106,10 @@ void AppController::setup() {
   callbacks.onTranscript = [this](const String &source, const String &text) {
     if (source != "model") {
       return;
+    }
+    if (_pendingTurnReset) {
+      _toolText = "";
+      _pendingTurnReset = false;
     }
     _toolText += text;
     resetBodyPage();
@@ -95,15 +121,12 @@ void AppController::setup() {
                                      : ErrorCategory::ServerRefused;
     setErrorState(mapped, "Server error", error);
   };
-  callbacks.onIgnoredAudio = [this](const String &reason) {
+  callbacks.onIgnoredAudio = [this](const String &) {
     _turnComplete = false;
     _turnHasAudio = false;
+    _pendingTurnReset = false;
     _audio.stopPlayback();
     setAppState(AppState::Ready, "Ready");
-    _toolText =
-        reason == "silent" ? "Ignored silent clip" : "Ignored short clip";
-    resetBodyPage();
-    _screenDirty = true;
   };
   callbacks.onAudio = [this](const uint8_t *data, size_t len) {
     if (_appState != AppState::Recording) {
@@ -120,6 +143,31 @@ void AppController::setup() {
   callbacks.onVolume = [this](int level) {
     _audio.setVolume(level);
     _settings.setVolume(level);
+  };
+  callbacks.onSetSpeaker = [this](const String &mode) {
+    bool enabled;
+    if (mode.equalsIgnoreCase("external") || mode.equalsIgnoreCase("spk2") ||
+        mode.equalsIgnoreCase("hat")) {
+      enabled = true;
+    } else if (mode.equalsIgnoreCase("internal") ||
+               mode.equalsIgnoreCase("builtin") ||
+               mode.equalsIgnoreCase("stick")) {
+      enabled = false;
+    } else {
+      return false;
+    }
+    _settings.setUseExternalSpeaker(enabled);
+    _audio.setUseExternalSpeaker(enabled);
+    return true;
+  };
+  callbacks.onSetExternalGain = [this](int gain) {
+    if (gain < SettingsStore::kMinExternalGain ||
+        gain > SettingsStore::kMaxExternalGain) {
+      return false;
+    }
+    _settings.setExternalSpeakerGain(gain);
+    _audio.setExternalSpeakerGain(_settings.externalSpeakerGain());
+    return true;
   };
   callbacks.onPlaySound = [this](const String &sound) {
     _powerManager.registerActivity();
@@ -144,6 +192,9 @@ void AppController::setup() {
                                    .powerOffMs = powerOffMs});
       };
   callbacks.getDeviceStatusJson = [this]() { return deviceStatusJson(); };
+  callbacks.onVoiceChanged = [this](const String &voice) {
+    _settings.setVoice(voice);
+  };
 
   _live.init(callbacks);
 
@@ -164,6 +215,32 @@ void AppController::setup() {
 
 void AppController::loop() {
   M5.update();
+
+  if (_pm1Ready && millis() - _lastPm1PollMs > 3000) {
+    _lastPm1PollMs = millis();
+    uint16_t vbat = 0, vin = 0, v5 = 0;
+    m5pm1_pwr_src_t src = M5PM1_PWR_SRC_UNKNOWN;
+    _pm1.readVbat(&vbat);
+    _pm1.readVin(&vin);
+    _pm1.read5VInOut(&v5);
+    _pm1.getPowerSource(&src);
+    const int level = M5.Power.getBatteryLevel();
+    const char *srcLabel = src == M5PM1_PWR_SRC_5VIN      ? "USB"
+                           : src == M5PM1_PWR_SRC_5VINOUT ? "5Vout"
+                           : src == M5PM1_PWR_SRC_BAT     ? "BAT"
+                                                          : "?";
+    char ts[16];
+    time_t now = time(nullptr);
+    struct tm local;
+    if (localtime_r(&now, &local) && local.tm_year + 1900 >= 2024) {
+      strftime(ts, sizeof(ts), "%H:%M:%S", &local);
+    } else {
+      snprintf(ts, sizeof(ts), "up+%lus", millis() / 1000);
+    }
+    Serial.printf("[%s] [Pwr] vbat=%u mV level=%d vin=%u v5out=%u src=%s heap=%uK\n",
+                  ts, vbat, level, vin, v5, srcLabel,
+                  static_cast<unsigned>(ESP.getFreeHeap() / 1024));
+  }
 
   if (millis() - _lastHeartbeatMs > 3000) {
     _lastHeartbeatMs = millis();
@@ -483,7 +560,13 @@ void AppController::selectCurrentMenuItem() {
       closeMenu();
       checkForUpdates();
       return;
-    case 3:
+    case 3: {
+      const bool next = !_settings.useExternalSpeaker();
+      _settings.setUseExternalSpeaker(next);
+      _audio.setUseExternalSpeaker(next);
+      return;
+    }
+    case 4:
       _live.disconnect();
       _wifi.disconnect();
       delay(100);
@@ -509,8 +592,9 @@ void AppController::selectCurrentMenuItem() {
 int AppController::menuItemCount() const {
   switch (_menuState) {
   case MenuState::Home:
-  case MenuState::Device:
     return 4;
+  case MenuState::Device:
+    return 5;
   case MenuState::ResumeChat:
     return _historyCount > 0 ? 1 + _historyCount : 2;
   }
@@ -540,8 +624,11 @@ String AppController::menuItemLabel(int index) const {
     case 1:
       return "Set up WiFi";
     case 2:
-      return "Check updates";
+      return "Check for updates";
     case 3:
+      return _settings.useExternalSpeaker() ? "Speaker: external"
+                                            : "Speaker: internal";
+    case 4:
       return "Turn off";
     default:
       return "";
@@ -649,7 +736,6 @@ void AppController::checkForUpdates() {
 void AppController::startRecording() {
   Serial.println("[Rec] === START RECORDING ===");
   _powerManager.registerActivity();
-  clearToolText();
   _audio.stopPlayback();
   _audio.startRecording();
   _turnComplete = false;
@@ -666,6 +752,7 @@ void AppController::stopRecording() {
                 _audioChunksSent);
   _audio.stopRecording();
   _live.sendStop();
+  _pendingTurnReset = true;
   _thinkingStartMs = millis();
   setAppState(AppState::Thinking, "Thinking...");
 }
@@ -777,20 +864,15 @@ DisplayState AppController::buildDisplayState() const {
       _appRegion == AppRegion::Menu && _menuState == MenuState::Home;
   if (homeMenuVisible) {
     state.headerLeft = currentTimeString();
-  } else {
-    state.headerLeft = _live.activeEndpointLabel();
-  }
-
-  const int battery = M5.Power.getBatteryLevel();
-  if (battery >= 0 && battery <= 100) {
-    state.headerRight = String(battery) + "%";
+    const int battery = M5.Power.getBatteryLevel();
+    if (battery >= 0 && battery <= 100) {
+      state.headerRight = String(battery) + "%";
+    }
   }
 
   state.bodyText = buildBodyText();
-  state.footerLeft = _wifi.isConnected() ? _wifi.ssid() : "offline";
-  state.footerRight = _chatId.isEmpty() ? "" : _chatId.substring(0, 8);
-  state.showRecordingProgress = _appState == AppState::Recording;
-  state.recordingProgress = recordingProgress();
+  state.bodyDim = _appState == AppState::Recording ||
+                  _appState == AppState::Thinking;
   state.pageIndex = _bodyPageIndex;
   state.pageCount = currentBodyPageCount();
   state.showMenu = _appRegion == AppRegion::Menu;
@@ -818,50 +900,49 @@ String AppController::buildBodyText() const {
   }
 
   if (_wifi.isCaptivePortalActive()) {
-    return "WiFi setup\nJoin " + _wifi.captivePortalSsid() + "\nOpen " +
-           _wifi.captivePortalIp();
+    return "To set up a new WiFi network, connect your phone to the WiFi "
+           "network named " +
+           _wifi.captivePortalSsid() +
+           " and enter your network's name and password.";
   }
 
   switch (_appState) {
   case AppState::Connecting:
-    if (_wifi.isConnected()) {
-      return _statusText + "\n" + _wifi.ssid() + "\n" + _wifi.localIp();
-    }
-    return _statusText + "\nSearching WiFi";
+    return "Starting...";
 
   case AppState::Ready:
-    return "Ready\nHold A to talk\nHold B for menu";
+    return "Hi, how can I help? Hold the big button and speak to get a "
+           "response.";
 
   case AppState::Recording:
-    return "Listening\nRelease A to send";
+    return "Hi, how can I help? Hold the big button and speak to get a "
+           "response.";
 
   case AppState::Thinking:
-    return "Thinking\nWaiting for reply";
+    return "Thinking...";
 
   case AppState::Playing:
-    return "Speaking\nHold A to interrupt";
+    return "";
 
   case AppState::ConfirmReset:
-    return "Factory reset?\nA confirm\nB cancel";
+    return "Are you sure? Reset will remove data and restart into the last "
+           "working version. WiFi credentials are kept.";
 
   case AppState::Error:
-    if (_errorText.isEmpty()) {
-      return String(errorCategoryLabel()) + "\n" + _statusText;
+    switch (_errorCategory) {
+    case ErrorCategory::Startup:
+      return "Could not start device.";
+    case ErrorCategory::WiFiTimeout:
+      return "Could not connect to the internet.";
+    case ErrorCategory::ServerRefused:
+    case ErrorCategory::GeminiUnavailable:
+    case ErrorCategory::None:
+    default:
+      return "Sorry, that didn't work.";
     }
-    return String(errorCategoryLabel()) + "\n" + _statusText + "\n" +
-           _errorText;
   }
 
   return "";
-}
-
-float AppController::recordingProgress() const {
-  if (_appState != AppState::Recording || kMaxRecordingMs == 0) {
-    return 0.0f;
-  }
-
-  return static_cast<float>(millis() - _recordingStartMs) /
-         static_cast<float>(kMaxRecordingMs);
 }
 
 int AppController::currentBodyPageCount() const {
@@ -892,6 +973,9 @@ String AppController::deviceStatusJson() const {
   status["battery_percent"] = M5.Power.getBatteryLevel();
   status["volume"] = _audio.volume();
   status["brightness"] = M5.Display.getBrightness();
+  status["speaker"] = _audio.useExternalSpeaker() ? "external" : "internal";
+  status["external_speaker_gain"] = _audio.externalSpeakerGain();
+  status["voice"] = _settings.voice();
   status["wifi_network"] = _wifi.isConnected() ? _wifi.ssid() : "disconnected";
   status["uptime_seconds"] = millis() / 1000;
   status["power_timeouts"]["dim_ms"] = _powerManager.timeouts().dimMs;

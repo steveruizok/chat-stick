@@ -47,6 +47,52 @@ const DEFAULT_POWER_TIMEOUTS = {
 	power_off_ms: 600_000,
 } as const
 
+const AVAILABLE_VOICES = [
+	{ name: 'Zephyr', description: 'Bright' },
+	{ name: 'Puck', description: 'Upbeat' },
+	{ name: 'Charon', description: 'Informative' },
+	{ name: 'Kore', description: 'Firm' },
+	{ name: 'Fenrir', description: 'Excitable' },
+	{ name: 'Leda', description: 'Youthful' },
+	{ name: 'Orus', description: 'Firm' },
+	{ name: 'Aoede', description: 'Breezy' },
+	{ name: 'Callirrhoe', description: 'Easy-going' },
+	{ name: 'Autonoe', description: 'Bright' },
+	{ name: 'Enceladus', description: 'Breathy' },
+	{ name: 'Iapetus', description: 'Clear' },
+	{ name: 'Umbriel', description: 'Easy-going' },
+	{ name: 'Algieba', description: 'Smooth' },
+	{ name: 'Despina', description: 'Smooth' },
+	{ name: 'Erinome', description: 'Clear' },
+	{ name: 'Algenib', description: 'Gravelly' },
+	{ name: 'Rasalgethi', description: 'Informative' },
+	{ name: 'Laomedeia', description: 'Upbeat' },
+	{ name: 'Achernar', description: 'Soft' },
+	{ name: 'Alnilam', description: 'Firm' },
+	{ name: 'Schedar', description: 'Even' },
+	{ name: 'Gacrux', description: 'Mature' },
+	{ name: 'Pulcherrima', description: 'Forward' },
+	{ name: 'Achird', description: 'Friendly' },
+	{ name: 'Zubenelgenubi', description: 'Casual' },
+	{ name: 'Vindemiatrix', description: 'Gentle' },
+	{ name: 'Sadachbia', description: 'Lively' },
+	{ name: 'Sadaltager', description: 'Knowledgeable' },
+	{ name: 'Sulafat', description: 'Warm' },
+] as const
+
+const DEFAULT_VOICE = 'Aoede'
+const VOICE_NAMES = new Set<string>(AVAILABLE_VOICES.map((v) => v.name))
+const VOICE_LIST_TEXT = AVAILABLE_VOICES.map((v) => `${v.name} (${v.description})`).join(', ')
+
+function resolveVoice(requested: string | null | undefined): string {
+	if (requested && VOICE_NAMES.has(requested)) return requested
+	return DEFAULT_VOICE
+}
+
+function findVoice(name: string): (typeof AVAILABLE_VOICES)[number] | undefined {
+	return AVAILABLE_VOICES.find((v) => v.name === name)
+}
+
 export class LiveSession {
 	private static readonly MIN_RECONNECT_MS = 1500
 	private static readonly IDLE_CLOSE_MS = 120_000
@@ -57,6 +103,7 @@ export class LiveSession {
 	private geminiReady = false
 	private deviceId = 'unknown'
 	private chatId = ''
+	private currentVoice = DEFAULT_VOICE
 	private currentUserText = ''
 	private currentAssistantText = ''
 	private sessionGeneration = 0
@@ -85,10 +132,11 @@ export class LiveSession {
 		await this.saveConversation()
 		this.cleanup()
 
-		// Extract device_id and chat_id from URL
+		// Extract device_id, chat_id, and voice from URL
 		const url = new URL(request.url)
 		this.deviceId = url.searchParams.get('device_id') || 'unknown'
 		this.chatId = url.searchParams.get('chat_id') || crypto.randomUUID()
+		this.currentVoice = resolveVoice(url.searchParams.get('voice'))
 		this.locationContext = buildLocationContext(request)
 
 		console.log(`[Device] Connected: device=${this.deviceId} chat=${this.chatId}`)
@@ -128,6 +176,17 @@ export class LiveSession {
 	}
 
 	private async connectGemini(sessionGeneration = this.sessionGeneration) {
+		if (this.geminiWs) {
+			console.log('[Gemini] Closing prior session before opening new one')
+			try {
+				this.geminiWs.close()
+			} catch {
+				// ignore
+			}
+			this.geminiWs = null
+			this.geminiReady = false
+		}
+
 		const url =
 			'https://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent' +
 			`?key=${this.env.GEMINI_API_KEY}`
@@ -184,6 +243,8 @@ export class LiveSession {
 				console.error('[Gemini] WebSocket error:', event)
 			})
 
+			const voice = findVoice(this.currentVoice) ?? findVoice(DEFAULT_VOICE)!
+
 			// Send session setup
 			ws.send(
 				JSON.stringify({
@@ -191,6 +252,11 @@ export class LiveSession {
 						model: 'models/gemini-3.1-flash-live-preview',
 						generationConfig: {
 							responseModalities: ['AUDIO'],
+							speechConfig: {
+								voiceConfig: {
+									prebuiltVoiceConfig: { voiceName: voice.name },
+								},
+							},
 						},
 						outputAudioTranscription: {},
 						inputAudioTranscription: {},
@@ -215,14 +281,20 @@ export class LiveSession {
 										'The user holds a button to talk and releases to hear your response.',
 										'Keep responses concise — the speaker is tiny. Be helpful, warm, and conversational.',
 										'',
+										`Your current voice is "${voice.name}" (${voice.description}).`,
+										'If the user asks to switch voices, call set_voice. The new voice takes effect after a brief reconnect — say a short acknowledgement first.',
+										'',
 										'You can control the device using the available tools:',
 										'- set_brightness: adjust display backlight',
 										'- set_volume: adjust speaker volume',
+										'- set_speaker: switch between the built-in speaker and an attached external SPK2 HAT',
+										'- set_external_speaker_gain: tune loudness of the external SPK2 HAT (1–64, default 24)',
+										'- set_voice: change the voice used for speech output',
 										'- show_text: display a message on the screen',
 										'- play_sound: play a named device sound effect',
 										'- play_melody: play a short note sequence on the device speaker',
 										'- power_off: shut the device down',
-										'- get_device_status: check battery, volume, brightness, etc.',
+										'- get_device_status: check battery, volume, brightness, voice, etc.',
 										'- search_docs: search the indexed knowledge base',
 										'- web_fetch: fetch a specific URL and read its text content',
 										'- google_search: search the web for current information (news, facts, recent events)',
@@ -270,6 +342,53 @@ export class LiveSession {
 												},
 											},
 											required: ['level'],
+										},
+									},
+									{
+										name: 'set_speaker',
+										description:
+											'Switch audio output between the StickS3 built-in speaker and an attached M5Stack HAT SPK2 external speaker. The user must physically attach the HAT before selecting "external" for audio to be audible. Check get_device_status to see which mode is currently active.',
+										parameters: {
+											type: 'OBJECT',
+											properties: {
+												mode: {
+													type: 'STRING',
+													description:
+														'"internal" for the built-in stick speaker, or "external" for the attached SPK2 HAT.',
+												},
+											},
+											required: ['mode'],
+										},
+									},
+									{
+										name: 'set_external_speaker_gain',
+										description:
+											'Adjust the software gain applied to audio sent to the external SPK2 HAT. Only effective when the speaker mode is "external". Raise to increase loudness; lower if you hear clipping or distortion. Typical usable range is 8 to 40.',
+										parameters: {
+											type: 'OBJECT',
+											properties: {
+												gain: {
+													type: 'INTEGER',
+													description:
+														'Gain multiplier, integer 1..64. Default is 24.',
+												},
+											},
+											required: ['gain'],
+										},
+									},
+									{
+										name: 'set_voice',
+										description:
+											'Change the voice used for speech output. Persists across sessions. Causes a brief reconnect, so say a short acknowledgement before calling. The new voice will speak the next response.',
+										parameters: {
+											type: 'OBJECT',
+											properties: {
+												name: {
+													type: 'STRING',
+													description: `Voice name. Must match exactly (case-sensitive). Available voices and character: ${VOICE_LIST_TEXT}.`,
+												},
+											},
+											required: ['name'],
 										},
 									},
 										{
@@ -688,6 +807,64 @@ export class LiveSession {
 							handledBy: 'server',
 							durationMs: Date.now() - startMs,
 						})
+				} else if (call.name === 'set_voice') {
+						const requested = (call.args as { name?: string }).name || ''
+						const match = findVoice(requested)
+						if (!match) {
+							const payload = JSON.stringify({
+								toolResponse: {
+									functionResponses: [
+										{
+											name: call.name,
+											id: call.id,
+											response: {
+												result: `Unknown voice "${requested}". Available: ${AVAILABLE_VOICES.map((v) => v.name).join(', ')}.`,
+											},
+										},
+									],
+								},
+							})
+							if (this.geminiWs) this.geminiWs.send(payload)
+							await this.logToolCall({
+								name: call.name,
+								args: call.args,
+								result: `unknown voice: ${requested}`,
+								handledBy: 'server',
+								status: 'error',
+								durationMs: Date.now() - startMs,
+							})
+						} else {
+							console.log(`[Gemini] Switching voice → ${match.name}`)
+							this.currentVoice = match.name
+							const payload = JSON.stringify({
+								toolResponse: {
+									functionResponses: [
+										{
+											name: call.name,
+											id: call.id,
+											response: {
+												result: `Voice set to ${match.name} (${match.description}). Reconnecting.`,
+											},
+										},
+									],
+								},
+							})
+							if (this.geminiWs) this.geminiWs.send(payload)
+							this.sendToDevice({ type: 'voice_changed', voice: match.name })
+							await this.logToolCall({
+								name: call.name,
+								args: call.args,
+								result: match.name,
+								handledBy: 'server',
+								durationMs: Date.now() - startMs,
+							})
+							if (this.geminiWs) {
+								try { this.geminiWs.close() } catch { /* ignore */ }
+								this.geminiWs = null
+								this.geminiReady = false
+							}
+							await this.connectGemini()
+						}
 				} else if (call.name === 'new_conversation' || call.name === 'new_chat') {
 						// Handle server-side: close Gemini session and open a fresh one
 						console.log('[Gemini] Resetting conversation')

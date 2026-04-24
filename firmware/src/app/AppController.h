@@ -9,6 +9,7 @@
 #include "../services/WiFiService.h"
 #include "../state/StateTypes.h"
 #include "../ui/TextDisplay.h"
+#include <M5PM1.h>
 
 class AppController {
 public:
@@ -44,6 +45,7 @@ private:
   String _toolText;
   bool _turnComplete = false;
   bool _turnHasAudio = false;
+  bool _pendingTurnReset = false;
   bool _screenDirty = true;
   unsigned long _thinkingStartMs = 0;
   unsigned long _recordingStartMs = 0;
@@ -70,6 +72,9 @@ private:
   AudioService _audio;
   LiveSessionService _live;
   SettingsStore _settings;
+  M5PM1 _pm1;
+  bool _pm1Ready = false;
+  unsigned long _lastPm1PollMs = 0;
 
   void configureCallbacks();
   void connectNetworkStack();
@@ -96,7 +101,6 @@ private:
   void processPower();
   void processCaptivePortal();
   void renderIfNeeded();
-  float recordingProgress() const;
   int currentBodyPageCount() const;
 
   void openMenu(MenuState state = MenuState::Home);

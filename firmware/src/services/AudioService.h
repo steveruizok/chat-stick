@@ -12,6 +12,11 @@ public:
   void setVolume(int level);
   int volume() const { return _volume; }
 
+  void setUseExternalSpeaker(bool enabled);
+  bool useExternalSpeaker() const { return _useExternalSpeaker; }
+  void setExternalSpeakerGain(int gain);
+  int externalSpeakerGain() const { return _externalSpeakerGain; }
+
   bool startRecording();
   void stopRecording();
   bool captureChunk();
@@ -45,6 +50,8 @@ private:
   int _playReadPos = 0;
   bool _playbackStarted = false;
   bool _chunkInFlight = false;
+  bool _useExternalSpeaker = false;
+  int _externalSpeakerGain = 24;
   int _volume = DEFAULT_VOLUME;
 
   void beginSpeaker();

@@ -27,7 +27,6 @@ private:
   int wrapBodyText(const String &text, String out[], int maxRows) const;
   void drawLine(int row, const String &text, uint16_t color) const;
   void drawGlyphAtRight(int row, char glyph, uint16_t color) const;
-  void drawRecordingProgress(float progress) const;
   void drawPageIndicator(int pageIndex, int pageCount) const;
   void drawMenu(const DisplayState &state) const;
 };

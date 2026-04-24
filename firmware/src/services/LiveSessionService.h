@@ -20,6 +20,8 @@ struct LiveSessionCallbacks {
   std::function<void(const uint8_t *, size_t)> onAudio;
   std::function<void(int)> onBrightness;
   std::function<void(int)> onVolume;
+  std::function<bool(const String &)> onSetSpeaker;
+  std::function<bool(int)> onSetExternalGain;
   std::function<bool(const String &)> onPlaySound;
   std::function<bool(const String &)> onPlayMelody;
   std::function<void()> onPowerOff;
@@ -27,6 +29,7 @@ struct LiveSessionCallbacks {
                      unsigned long)>
       onPowerTimeouts;
   std::function<String()> getDeviceStatusJson;
+  std::function<void(const String &)> onVoiceChanged;
 };
 
 struct ConversationSummary {
@@ -50,6 +53,8 @@ public:
   void poll();
   void reconnectIfNeeded(bool enabled);
   void setChatId(const String &chatId) { _chatId = chatId; }
+  void setVoice(const String &voice) { _voice = voice; }
+  const String &voice() const { return _voice; }
 
   bool isConnected() const { return _connected; }
   int activeServerIndex() const { return _activeServerIndex; }
@@ -67,6 +72,7 @@ private:
   websockets::WebsocketsClient _ws;
   LiveSessionCallbacks _callbacks;
   String _chatId;
+  String _voice;
   bool _connected = false;
   unsigned long _lastReconnectMs = 0;
   int _nextServerIndex = 0;

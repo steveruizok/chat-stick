@@ -21,8 +21,7 @@ struct DisplayState {
   String bodyText;
   String footerLeft;
   String footerRight;
-  bool showRecordingProgress = false;
-  float recordingProgress = 0.0f;
+  bool bodyDim = false;
   bool showMenu = false;
   String menuItems[MAX_MENU_VISIBLE_ITEMS];
   int menuItemCount = 0;
