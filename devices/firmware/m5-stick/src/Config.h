@@ -54,7 +54,7 @@ constexpr unsigned long WIFI_CONNECT_POLL_MS = 100;
 // ============= Device =============
 constexpr const char *FIRMWARE_DEVICE = "m5-stick";
 constexpr const char *DEVICE_ID = "m5s3-live";
-constexpr int FIRMWARE_VERSION = 14;
+constexpr int FIRMWARE_VERSION = 15;
 
 // ============= Audio =============
 constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)

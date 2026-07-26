@@ -70,7 +70,7 @@ constexpr unsigned long WIFI_CONNECT_POLL_MS = 250;
 // ============= Device =============
 constexpr const char *FIRMWARE_DEVICE = "waveshare";
 constexpr const char *DEVICE_ID = "waveshare-amoled18-live";
-constexpr int FIRMWARE_VERSION = 10;
+constexpr int FIRMWARE_VERSION = 11;
 
 // ============= Audio =============
 constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)
