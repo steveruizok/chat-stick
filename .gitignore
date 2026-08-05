@@ -6,6 +6,11 @@ devices/firmware/*/src/credentials.h
 
 # PlatformIO
 devices/firmware/*/.pio/
+devices/firmware/*/.dummy/
+devices/firmware/*/managed_components/
+devices/firmware/*/sdkconfig.defaults
+devices/firmware/*/sdkconfig.stack-chan-*
+devices/firmware/*/dependencies.lock
 
 # Cloudflare / Wrangler
 server/.wrangler/

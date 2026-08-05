@@ -1,6 +1,6 @@
 # chat-stick
 
-A handheld voice interface for large language models, built on ESP32-S3 devices including the [M5StickS3](https://docs.m5stack.com/en/core/M5StickS3) and [Waveshare ESP32-S3 Touch AMOLED 1.8](https://www.waveshare.com/esp32-s3-touch-amoled-1.8.htm?srsltid=AfmBOopWm_MZL8aGf5XV585tGT0jWPlOl0W76xvRGnrxafm7xtMon-yv).
+A voice interface for large language models, built on ESP32-S3 devices including the [M5StickS3](https://docs.m5stack.com/en/core/M5StickS3), [Waveshare ESP32-S3 Touch AMOLED 1.8](https://www.waveshare.com/esp32-s3-touch-amoled-1.8.htm?srsltid=AfmBOopWm_MZL8aGf5XV585tGT0jWPlOl0W76xvRGnrxafm7xtMon-yv), and the robot-oriented [M5Stack Stack-Chan](https://docs.m5stack.com/en/StackChan).
 
 Hold the primary button, talk, release, and hear the model respond. A Cloudflare Worker relays device audio to Google's Gemini Live API and routes tool calls back to the device or to server-side services.
 
@@ -29,7 +29,7 @@ ESP32-S3 device ──WebSocket──▶ Cloudflare Worker / Durable Object ─�
   mic/speaker/display          relay, history, tools, OTA                     speech-to-speech AI
 ```
 
-**Firmware** lives in `devices/firmware/`, with one PlatformIO/Arduino project per device: `m5-stick/` and `waveshare/`. Each captures 16 kHz PCM audio, streams it to the worker, plays 24 kHz PCM audio responses, manages the screen/menu/buttons, stores local settings in ESP32 NVS, and executes device-side tool calls.
+**Firmware** lives in `devices/firmware/`, with one PlatformIO/Arduino project per device. The `m5-stick/` and `waveshare/` targets run the full voice client. `stack-chan/` is currently a hardware bring-up scaffold for the robot's face, touch, motion, LEDs, battery, and speaker; its voice and cloud layers are next.
 
 **Server** (`server/`) is a Cloudflare Worker with a `LiveSession` Durable Object per device. It bridges the device and Gemini Live WebSockets, persists conversation/tool/file/image state in D1, uses Workers AI + Vectorize for docs search, and optionally uses R2 for OTA firmware and image PNG archival.
 
@@ -94,7 +94,7 @@ pio run -t upload
 pio device monitor
 ```
 
-From the repository root, `./flash.sh m5-stick --monitor` and `./flash.sh waveshare --monitor` build, flash, and optionally open the monitor.
+From the repository root, `./flash.sh m5-stick --monitor`, `./flash.sh waveshare --monitor`, and `./flash.sh stack-chan --monitor` build, flash, and optionally open the monitor.
 
 The device also has a captive WiFi setup flow. From the menu, use `Device -> Set up WiFi`, join the `chat-stick-setup` access point, and submit credentials in the browser form.
 

@@ -2,7 +2,7 @@
 # Build and flash firmware to a USB-connected device.
 #
 # Usage:
-#   ./flash.sh [m5-stick|waveshare] [--monitor] [--port /dev/cu.usbmodem101]
+#   ./flash.sh [m5-stick|waveshare|stack-chan] [--monitor] [--port /dev/cu.usbmodem101]
 #   PORT=/dev/cu.usbmodem101 ./flash.sh waveshare
 # Pass --monitor to also open the serial monitor after flashing.
 set -euo pipefail
@@ -14,7 +14,7 @@ PORT="${FIRMWARE_PORT:-${PORT:-}}"
 MONITOR=false
 
 usage() {
-  echo "Usage: $0 [m5-stick|waveshare] [--monitor] [--port /dev/cu.usbmodem101]" >&2
+  echo "Usage: $0 [m5-stick|waveshare|stack-chan] [--monitor] [--port /dev/cu.usbmodem101]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     --port=*)
       PORT="${1#--port=}"
       ;;
-    m5-stick|waveshare)
+    m5-stick|waveshare|stack-chan)
       DEVICE="$1"
       ;;
     *)
