@@ -74,24 +74,33 @@ bool parseExpression(const String &name, Expression &expression) {
 bool FaceRenderer::begin(LGFX_Device &display) {
   _display = &display;
   _canvas.setColorDepth(16);
+  // A full-screen 16-bit sprite is roughly 150 KB, which does not reliably
+  // fit in one contiguous block of the CoreS3's internal heap after board
+  // initialization. Keep that framebuffer in PSRAM and preserve internal RAM
+  // for Wi-Fi, camera DMA, and task stacks.
+  _canvas.setPsram(true);
   if (_canvas.createSprite(display.width(), display.height()) == nullptr) {
     return false;
   }
-  scheduleBlink(millis());
+  if (Config::kBlinkEnabled) {
+    scheduleBlink(millis());
+  }
   draw();
   return true;
 }
 
 void FaceRenderer::update(uint32_t nowMs) {
-  if (!_blinkClosed && nowMs >= _nextBlinkMs &&
-      _expression != Expression::Surprised) {
-    _blinkClosed = true;
-    _blinkEndsMs = nowMs + Config::kBlinkDurationMs;
-    _dirty = true;
-  } else if (_blinkClosed && nowMs >= _blinkEndsMs) {
-    _blinkClosed = false;
-    scheduleBlink(nowMs);
-    _dirty = true;
+  if (Config::kBlinkEnabled) {
+    if (!_blinkClosed && nowMs >= _nextBlinkMs &&
+        _expression != Expression::Surprised) {
+      _blinkClosed = true;
+      _blinkEndsMs = nowMs + Config::kBlinkDurationMs;
+      _dirty = true;
+    } else if (_blinkClosed && nowMs >= _blinkEndsMs) {
+      _blinkClosed = false;
+      scheduleBlink(nowMs);
+      _dirty = true;
+    }
   }
 
   if (_dirty) {

@@ -11,6 +11,7 @@ constexpr int kFirmwareVersion = 1;
 constexpr uint8_t kDisplayBrightness = 96;
 constexpr uint8_t kSpeakerVolume = 96;
 constexpr uint32_t kFrameIntervalMs = 16;
+constexpr bool kBlinkEnabled = false;
 constexpr uint32_t kBlinkIntervalMinMs = 2400;
 constexpr uint32_t kBlinkIntervalMaxMs = 5200;
 constexpr uint32_t kBlinkDurationMs = 130;
