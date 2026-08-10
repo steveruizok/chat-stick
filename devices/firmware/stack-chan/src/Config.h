@@ -43,6 +43,14 @@ constexpr bool kEnableControlAccessPoint = false;
 constexpr bool kEnableCamera = STACK_CHAN_ENABLE_CAMERA != 0;
 constexpr uint16_t kControlHttpPort = 80;
 constexpr uint16_t kCameraStreamPort = 81;
+constexpr uint16_t kAudioHttpPort = 82;
 constexpr uint32_t kWifiConnectTimeoutMs = 10000;
+
+// Audio is intentionally half-duplex on CoreS3: its microphone and speaker
+// share the codec path and cannot be active at the same time.
+constexpr uint32_t kAudioSampleRate = 16000;
+constexpr int kDefaultDeviceRecordingSeconds = 5;
+constexpr int kMaxDeviceRecordingSeconds = 5;
+constexpr int kMaxWebsiteRecordingSeconds = 10;
 
 } // namespace Config

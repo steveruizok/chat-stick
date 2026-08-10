@@ -1,6 +1,7 @@
 #include "StackChanApp.h"
 
 #include "Config.h"
+#include <WiFi.h>
 
 namespace {
 void expressionColor(Expression expression, uint8_t &red, uint8_t &green,
@@ -56,13 +57,15 @@ void StackChanApp::setup() {
   } else {
     Serial.println("[Camera] disabled (control service has priority)");
   }
-  _web.begin(_board, _face, _camera);
+  _audio.begin();
+  _web.begin(_board, _face, _camera, _audio);
   printHelp();
   printStatus();
 }
 
 void StackChanApp::loop() {
   _board.update();
+  _audio.update();
   _web.update();
   handleInputs();
   handleSerial();
@@ -136,6 +139,10 @@ void StackChanApp::runCommand(String line) {
     printStatus();
   } else if (command == "network" && arguments.equalsIgnoreCase("off")) {
     _web.stop();
+  } else if (command == "mic") {
+    _audio.setMicrophoneEnabled(arguments.equalsIgnoreCase("on"));
+  } else if (command == "speaker") {
+    _audio.setSpeakerEnabled(arguments.equalsIgnoreCase("on"));
   } else if (command == "neutral") {
     _board.lookNeutral();
   } else if (command == "stop") {
@@ -194,6 +201,8 @@ void StackChanApp::printHelp() const {
       "  neutral | stop                 motion controls\n"
       "  torque <on|off>                servo torque\n"
       "  rgb <red> <green> <blue>       all 12 body LEDs\n"
+      "  mic <on|off>                   device microphone\n"
+      "  speaker <on|off>               device speaker\n"
       "  network off                    stop Wi-Fi until reboot\n"
       "  help                            show commands");
 }
@@ -207,8 +216,14 @@ void StackChanApp::printStatus() {
       _board.pitchTenths() / 10.0f, expressionName(_face.expression()),
       static_cast<unsigned>(ESP.getFreeHeap() / 1024),
       static_cast<unsigned>(ESP.getFreePsram() / 1024));
-  Serial.printf("[Network] control=%s camera=%s%s%s\n",
+  Serial.printf("[Network] wifi_status=%d rssi=%d control=%s camera=%s%s%s "
+                "audio=%s mic=%s speaker=%s\n",
+                static_cast<int>(WiFi.status()),
+                WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0,
                 _web.address().c_str(), _camera.available() ? "ready" : "off",
                 _camera.available() ? "" : " error=",
-                _camera.available() ? "" : _camera.error());
+                _camera.available() ? "" : _camera.error(),
+                _audio.available() ? "ready" : "off",
+                _audio.microphoneEnabled() ? "on" : "muted",
+                _audio.speakerEnabled() ? "on" : "muted");
 }

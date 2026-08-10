@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hal/StackChanBoard.h"
+#include "services/AudioService.h"
 #include "services/CameraService.h"
 #include "ui/FaceRenderer.h"
 #include <WebServer.h>
@@ -8,7 +9,7 @@
 class WebControlService {
 public:
   bool begin(StackChanBoard &board, FaceRenderer &face,
-             CameraService &camera);
+             CameraService &camera, AudioService &audio);
   void update();
   void stop();
   String address() const;
@@ -19,6 +20,7 @@ private:
   StackChanBoard *_board = nullptr;
   FaceRenderer *_face = nullptr;
   CameraService *_camera = nullptr;
+  AudioService *_audio = nullptr;
   bool _accessPointMode = false;
   bool _available = false;
 

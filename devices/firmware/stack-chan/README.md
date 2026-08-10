@@ -13,11 +13,13 @@ two-button port of the handheld firmware.
 - Battery voltage/current reporting.
 - Serial console for exercising hardware without rebuilding.
 - Device-hosted control website with live telemetry and safe head controls.
+- Half-duplex audio exchange between the CoreS3 and control website, with
+  independent device microphone and speaker mute controls.
 - Native CoreS3 camera capture through Espressif `esp_video`, exposed as an
   MJPEG stream alongside the control website.
 
-Microphones, NFC, infrared, IMU-driven behavior, Wi-Fi voice sessions, and OTA
-are left as explicit next layers. The CoreS3 and body hardware support
+NFC, infrared, IMU-driven behavior, Wi-Fi voice sessions, and OTA are left as
+explicit next layers. The CoreS3 and body hardware support
 all of them, but they deserve robot-oriented services rather than being hidden
 inside the existing handheld adapters.
 
@@ -82,6 +84,19 @@ capture uses the device's native `esp_video`/V4L2 path with its frame buffer in
 PSRAM, avoiding the internal-DMA exhaustion caused by the generic Arduino
 camera driver.
 
+The Audio exchange card can record five seconds from Stack-Chan and play the
+result in the browser. In the other direction it records up to ten seconds in
+the browser, converts it to 16 kHz mono PCM, and plays it through Stack-Chan.
+The CoreS3 audio codec is half-duplex, so starting a device recording stops any
+current speaker playback. Device microphone and speaker mutes are independent.
+
+Modern browsers expose direct microphone capture only in a secure context.
+Because this local page is normally served over plain HTTP, the card also has a
+`Choose / record audio` control; mobile browsers can hand that off to the
+system recorder, and desktop browsers can select an existing audio file. Direct
+in-page recording works when the control origin is explicitly trusted or
+proxied through localhost.
+
 Type `help` in the 115200-baud serial monitor for commands. Useful smoke tests:
 
 ```text
@@ -91,6 +106,8 @@ look -30 45
 look 30 45
 neutral
 rgb 0 16 24
+mic off
+speaker off
 torque off
 network off
 ```
