@@ -12,9 +12,18 @@ namespace {
 Arduino_DataBus *displayBus =
     new Arduino_ESP32QSPI(LCD_CS_PIN, LCD_SCLK_PIN, LCD_SDIO0_PIN,
                           LCD_SDIO1_PIN, LCD_SDIO2_PIN, LCD_SDIO3_PIN);
-/// Shared display panel instance.
-Arduino_SH8601 *displayPanel = new Arduino_SH8601(
+/// Original board display panel.
+Arduino_SH8601 *displayPanelOriginal = new Arduino_SH8601(
     displayBus, GFX_NOT_DEFINED, 0, SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX);
+/// V2 board display panel. The panel memory starts 16 columns into the
+/// controller's address space, matching Waveshare's first-party V2 examples.
+Arduino_CO5300 *displayPanelV2 = new Arduino_CO5300(
+    displayBus, GFX_NOT_DEFINED, 0, SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX, 16, 0, 0,
+    0);
+/// Runtime-selected panel. Original boards use FT3168 touch at 0x38; V2 uses
+/// CST820 at 0x15, which lets us distinguish otherwise identical hardware.
+Arduino_OLED *displayPanel = displayPanelOriginal;
+const char *currentDisplayController = "SH8601";
 
 /// Power-management IC driver instance.
 XPowersPMU pmu;
@@ -39,6 +48,11 @@ const DeviceCapabilities kCapabilities = {.externalSpeakerSwitch = false,
                                               SHOW_BOOT_LOG_ON_DISPLAY,
                                           .debugDisplay =
                                               SHOW_DEBUG_TEXT_ON_DISPLAY};
+
+bool i2cDevicePresent(uint8_t address) {
+  Wire.beginTransmission(address);
+  return Wire.endTransmission() == 0;
+}
 
 /**
  * @brief Enable PMU ADC channels used for power telemetry.
@@ -105,6 +119,18 @@ bool init() {
   Wire.begin(BOARD_I2C_SDA_PIN, BOARD_I2C_SCL_PIN);
   Wire.setClock(400000);
 
+  const bool hasCstTouch = i2cDevicePresent(0x15);
+  const bool hasFtTouch = i2cDevicePresent(0x38);
+  if (hasCstTouch && !hasFtTouch) {
+    displayPanel = displayPanelV2;
+    currentDisplayController = "CO5300";
+  } else {
+    displayPanel = displayPanelOriginal;
+    currentDisplayController = "SH8601";
+  }
+  Log::client("Board", "display=%s touch=%s", currentDisplayController,
+              hasCstTouch ? "CST820" : (hasFtTouch ? "FT3168" : "unknown"));
+
   pmuReady = pmu.begin(Wire, AXP2101_SLAVE_ADDRESS, BOARD_I2C_SDA_PIN,
                        BOARD_I2C_SCL_PIN);
   if (pmuReady) {
@@ -134,7 +160,9 @@ void update() { pollPmuButton(); }
  * @brief Access the shared display driver.
  * @return Reference to the display panel.
  */
-Arduino_SH8601 &display() { return *displayPanel; }
+Arduino_OLED &display() { return *displayPanel; }
+
+const char *displayControllerName() { return currentDisplayController; }
 
 /**
  * @brief Read the current state of button A.

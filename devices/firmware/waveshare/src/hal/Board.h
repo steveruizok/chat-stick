@@ -17,8 +17,11 @@ const DeviceCapabilities &capabilities();
 /// Service board-level background work.
 void update();
 
-/// Shared display driver instance.
-Arduino_SH8601 &display();
+/// Shared display driver instance. Runtime-selected for original or V2 boards.
+Arduino_OLED &display();
+
+/// Human-readable name of the detected AMOLED controller.
+const char *displayControllerName();
 
 /// Whether button A is currently pressed.
 bool buttonAIsPressed();
