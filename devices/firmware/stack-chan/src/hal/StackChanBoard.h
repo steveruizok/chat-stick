@@ -12,6 +12,9 @@ public:
   LGFX_Device &display();
 
   bool topWasClicked() const;
+  bool topWasPressed() const;
+  bool topWasReleased() const;
+  bool topIsPressed() const;
   bool topWasSwipedForward() const;
   bool topWasSwipedBackward() const;
   const std::array<uint8_t, 3> &topTouchIntensities() const;

@@ -8,7 +8,7 @@ two-button port of the handheld firmware.
 
 - Animated face with blinking and seven expressions.
 - Safe, clamped yaw/pitch movement through the official StackChan BSP.
-- Three-zone top touch gestures and capacitive screen taps.
+- Push-to-talk on the three-zone top touch control and capacitive screen taps.
 - Expression-linked control of all 12 body RGB LEDs.
 - Battery voltage/current reporting.
 - Serial console for exercising hardware without rebuilding.
@@ -51,8 +51,8 @@ available as a camera-free recovery build; the default is
 ## Controls
 
 - Tap the screen to cycle expressions.
-- Tap the three-zone sensor on top for a happy response and neutral pose.
-- Swipe the top sensor forward/backward to look left/right.
+- Hold the three-zone sensor on top to record a push-to-talk message; release
+  it to make the message available to the control website.
 
 The firmware never commands a vertical angle outside 5-85 degrees. Motion only
 happens after deliberate touch or serial input; boot itself does not reposition
@@ -84,9 +84,13 @@ capture uses the device's native `esp_video`/V4L2 path with its frame buffer in
 PSRAM, avoiding the internal-DMA exhaustion caused by the generic Arduino
 camera driver.
 
-The Audio exchange card can record five seconds from Stack-Chan and play the
-result in the browser. In the other direction it records up to ten seconds in
-the browser, converts it to 16 kHz mono PCM, and plays it through Stack-Chan.
+The Walkie-talkie card can automatically play messages recorded by holding the
+top touch control. Click `Enable walkie-talkie` once in the browser, hold the
+top control while speaking, and release it to send the message to the page. A
+manual five-second device recording remains available. In the other direction
+the page records up to ten seconds in the browser, converts it to 16 kHz mono
+PCM, and plays it through Stack-Chan. Pressing the top control interrupts
+speaker playback immediately so the device can record.
 The CoreS3 audio codec is half-duplex, so starting a device recording stops any
 current speaker playback. Device microphone and speaker mutes are independent.
 

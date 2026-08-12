@@ -79,20 +79,19 @@ void StackChanApp::loop() {
 }
 
 void StackChanApp::handleInputs() {
-  if (_board.topWasClicked()) {
-    applyExpression(Expression::Happy);
-    _board.lookNeutral();
-    Serial.println("[Input] top click");
+  if (_board.topWasPressed()) {
+    if (_audio.beginPushToTalk()) {
+      applyExpression(Expression::Listening);
+      Serial.println("[Input] push-to-talk pressed");
+    } else {
+      Serial.println("[Input] push-to-talk unavailable");
+    }
   }
 
-  if (_board.topWasSwipedForward()) {
-    _board.lookAtDegrees(-35.0f, 45.0f);
-    Serial.println("[Input] top swipe forward");
-  }
-
-  if (_board.topWasSwipedBackward()) {
-    _board.lookAtDegrees(35.0f, 45.0f);
-    Serial.println("[Input] top swipe backward");
+  if (_board.topWasReleased()) {
+    _audio.endPushToTalk();
+    applyExpression(Expression::Neutral);
+    Serial.println("[Input] push-to-talk released");
   }
 
   int16_t x = 0;
@@ -217,7 +216,7 @@ void StackChanApp::printStatus() {
       static_cast<unsigned>(ESP.getFreeHeap() / 1024),
       static_cast<unsigned>(ESP.getFreePsram() / 1024));
   Serial.printf("[Network] wifi_status=%d rssi=%d control=%s camera=%s%s%s "
-                "audio=%s mic=%s speaker=%s\n",
+                "audio=%s mic=%s speaker=%s ptt=%s sequence=%u\n",
                 static_cast<int>(WiFi.status()),
                 WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0,
                 _web.address().c_str(), _camera.available() ? "ready" : "off",
@@ -225,5 +224,7 @@ void StackChanApp::printStatus() {
                 _camera.available() ? "" : _camera.error(),
                 _audio.available() ? "ready" : "off",
                 _audio.microphoneEnabled() ? "on" : "muted",
-                _audio.speakerEnabled() ? "on" : "muted");
+                _audio.speakerEnabled() ? "on" : "muted",
+                _audio.pushToTalkActive() ? "recording" : "ready",
+                static_cast<unsigned>(_audio.pushToTalkSequence()));
 }

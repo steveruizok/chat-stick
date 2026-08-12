@@ -26,6 +26,18 @@ bool StackChanBoard::topWasClicked() const {
   return M5StackChan.TouchSensor.wasClicked();
 }
 
+bool StackChanBoard::topWasPressed() const {
+  return M5StackChan.TouchSensor.wasPressed();
+}
+
+bool StackChanBoard::topWasReleased() const {
+  return M5StackChan.TouchSensor.wasReleased();
+}
+
+bool StackChanBoard::topIsPressed() const {
+  return M5StackChan.TouchSensor.isPressed();
+}
+
 bool StackChanBoard::topWasSwipedForward() const {
   return M5StackChan.TouchSensor.wasSwipedForward();
 }

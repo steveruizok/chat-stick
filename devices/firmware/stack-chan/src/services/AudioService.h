@@ -23,9 +23,13 @@ public:
   bool speakerEnabled() const { return _speakerEnabled; }
   bool recording() const { return _recording; }
   bool playing() const { return _playing; }
+  bool pushToTalkActive() const { return _pushToTalkActive; }
+  uint32_t pushToTalkSequence() const { return _pushToTalkSequence; }
 
   void setMicrophoneEnabled(bool enabled);
   void setSpeakerEnabled(bool enabled);
+  bool beginPushToTalk();
+  void endPushToTalk();
 
 private:
   httpd_handle_t _server = nullptr;
@@ -37,12 +41,18 @@ private:
   volatile bool _speakerEnabled = true;
   volatile bool _recording = false;
   volatile bool _playing = false;
+  volatile bool _pushToTalkActive = false;
+  volatile uint32_t _pushToTalkSequence = 0;
+  uint32_t _pushToTalkStartedMs = 0;
+  size_t _pushToTalkSamples = 0;
   String _error;
 
   static esp_err_t captureHandler(httpd_req_t *request);
   static esp_err_t playbackHandler(httpd_req_t *request);
+  static esp_err_t pushToTalkHandler(httpd_req_t *request);
   static esp_err_t optionsHandler(httpd_req_t *request);
 
   esp_err_t handleCapture(httpd_req_t *request);
   esp_err_t handlePlayback(httpd_req_t *request);
+  esp_err_t handlePushToTalk(httpd_req_t *request);
 };

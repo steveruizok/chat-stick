@@ -157,6 +157,11 @@ bool AudioService::startServer() {
   playback.method = HTTP_POST;
   playback.handler = playbackHandler;
   playback.user_ctx = this;
+  httpd_uri_t pushToTalk = {};
+  pushToTalk.uri = "/ptt/latest";
+  pushToTalk.method = HTTP_GET;
+  pushToTalk.handler = pushToTalkHandler;
+  pushToTalk.user_ctx = this;
   httpd_uri_t captureOptions = {};
   captureOptions.uri = "/capture";
   captureOptions.method = HTTP_OPTIONS;
@@ -167,11 +172,18 @@ bool AudioService::startServer() {
   playbackOptions.method = HTTP_OPTIONS;
   playbackOptions.handler = optionsHandler;
   playbackOptions.user_ctx = this;
+  httpd_uri_t pushToTalkOptions = {};
+  pushToTalkOptions.uri = "/ptt/latest";
+  pushToTalkOptions.method = HTTP_OPTIONS;
+  pushToTalkOptions.handler = optionsHandler;
+  pushToTalkOptions.user_ctx = this;
 
   if (httpd_register_uri_handler(_server, &capture) != ESP_OK ||
       httpd_register_uri_handler(_server, &playback) != ESP_OK ||
+      httpd_register_uri_handler(_server, &pushToTalk) != ESP_OK ||
       httpd_register_uri_handler(_server, &captureOptions) != ESP_OK ||
-      httpd_register_uri_handler(_server, &playbackOptions) != ESP_OK) {
+      httpd_register_uri_handler(_server, &playbackOptions) != ESP_OK ||
+      httpd_register_uri_handler(_server, &pushToTalkOptions) != ESP_OK) {
     httpd_stop(_server);
     _server = nullptr;
     _error = "audio HTTP route registration failed";
@@ -185,6 +197,11 @@ bool AudioService::startServer() {
 }
 
 void AudioService::update() {
+  if (_pushToTalkActive &&
+      millis() - _pushToTalkStartedMs >=
+          Config::kMaxDeviceRecordingSeconds * 1000U) {
+    endPushToTalk();
+  }
   if (_playing && !M5.Speaker.isPlaying()) {
     _playing = false;
   }
@@ -197,11 +214,18 @@ void AudioService::stopServer() {
   }
   M5.Mic.end();
   M5.Speaker.stop();
+  if (_pushToTalkActive && _audioMutex) {
+    _pushToTalkActive = false;
+    xSemaphoreGive(_audioMutex);
+  }
   _recording = false;
   _playing = false;
 }
 
 void AudioService::setMicrophoneEnabled(bool enabled) {
+  if (!enabled && _pushToTalkActive) {
+    endPushToTalk();
+  }
   _microphoneEnabled = enabled;
   Serial.printf("[Audio] device microphone %s\n", enabled ? "on" : "muted");
 }
@@ -218,12 +242,77 @@ void AudioService::setSpeakerEnabled(bool enabled) {
   Serial.printf("[Audio] device speaker %s\n", enabled ? "on" : "muted");
 }
 
+bool AudioService::beginPushToTalk() {
+  if (!_available || !_microphoneEnabled || _pushToTalkActive ||
+      !_audioMutex || xSemaphoreTake(_audioMutex, 0) != pdTRUE) {
+    return false;
+  }
+
+  _playing = false;
+  M5.Speaker.stop();
+  M5.Speaker.end();
+  memset(_captureBuffer, 0, kCaptureBytes);
+  if (!M5.Mic.begin() ||
+      !M5.Mic.record(_captureBuffer, kCaptureSamples,
+                     Config::kAudioSampleRate, false)) {
+    M5.Mic.end();
+    if (_speakerEnabled) {
+      M5.Speaker.begin();
+      M5.Speaker.setVolume(Config::kSpeakerVolume);
+    }
+    xSemaphoreGive(_audioMutex);
+    Serial.println("[Audio] push-to-talk capture failed to start");
+    return false;
+  }
+
+  _pushToTalkSamples = 0;
+  _pushToTalkStartedMs = millis();
+  _pushToTalkActive = true;
+  _recording = true;
+  Serial.println("[Audio] push-to-talk recording");
+  return true;
+}
+
+void AudioService::endPushToTalk() {
+  if (!_pushToTalkActive) {
+    return;
+  }
+
+  const uint32_t elapsedMs = millis() - _pushToTalkStartedMs;
+  M5.Mic.end();
+  _pushToTalkSamples = min(
+      kCaptureSamples,
+      static_cast<size_t>((static_cast<uint64_t>(elapsedMs) *
+                           Config::kAudioSampleRate) /
+                          1000U));
+  _recording = false;
+  _pushToTalkActive = false;
+  if (_speakerEnabled) {
+    M5.Speaker.begin();
+    M5.Speaker.setVolume(Config::kSpeakerVolume);
+  }
+  if (_pushToTalkSamples > 0) {
+    _pushToTalkSequence = _pushToTalkSequence + 1;
+  }
+  if (_audioMutex) {
+    xSemaphoreGive(_audioMutex);
+  }
+  Serial.printf("[Audio] push-to-talk ready samples=%u sequence=%u\n",
+                static_cast<unsigned>(_pushToTalkSamples),
+                static_cast<unsigned>(_pushToTalkSequence));
+}
+
 esp_err_t AudioService::captureHandler(httpd_req_t *request) {
   return static_cast<AudioService *>(request->user_ctx)->handleCapture(request);
 }
 
 esp_err_t AudioService::playbackHandler(httpd_req_t *request) {
   return static_cast<AudioService *>(request->user_ctx)->handlePlayback(request);
+}
+
+esp_err_t AudioService::pushToTalkHandler(httpd_req_t *request) {
+  return static_cast<AudioService *>(request->user_ctx)
+      ->handlePushToTalk(request);
 }
 
 esp_err_t AudioService::optionsHandler(httpd_req_t *request) {
@@ -241,6 +330,9 @@ esp_err_t AudioService::handleCapture(httpd_req_t *request) {
   if (xSemaphoreTake(_audioMutex, 0) != pdTRUE) {
     return sendError(request, "409 Conflict", "audio device is busy");
   }
+  // The manual capture uses the same PSRAM buffer as push-to-talk. Retire any
+  // older push-to-talk clip before overwriting it.
+  _pushToTalkSamples = 0;
 
   int seconds = Config::kDefaultDeviceRecordingSeconds;
   char query[48];
@@ -369,4 +461,40 @@ esp_err_t AudioService::handlePlayback(httpd_req_t *request) {
   setCorsHeaders(request);
   httpd_resp_set_type(request, "application/json");
   return httpd_resp_sendstr(request, "{\"playing\":true}");
+}
+
+esp_err_t AudioService::handlePushToTalk(httpd_req_t *request) {
+  if (!_available) {
+    return sendError(request, "503 Service Unavailable", "audio unavailable");
+  }
+  if (_pushToTalkSequence == 0 || _pushToTalkSamples == 0) {
+    setCorsHeaders(request);
+    return httpd_resp_send(request, nullptr, 0);
+  }
+  if (!_audioMutex || xSemaphoreTake(_audioMutex, 0) != pdTRUE) {
+    return sendError(request, "409 Conflict", "push-to-talk is recording");
+  }
+
+  const size_t samples = _pushToTalkSamples;
+  const uint32_t sequence = _pushToTalkSequence;
+  const WavHeader header = makeWavHeader(samples);
+  const String sequenceHeader = String(sequence);
+  setCorsHeaders(request);
+  httpd_resp_set_type(request, "audio/wav");
+  httpd_resp_set_hdr(request, "X-Push-To-Talk-Sequence",
+                     sequenceHeader.c_str());
+  httpd_resp_set_hdr(request, "Content-Disposition",
+                     "inline; filename=stack-chan-ptt.wav");
+  esp_err_t result = httpd_resp_send_chunk(
+      request, reinterpret_cast<const char *>(&header), sizeof(header));
+  if (result == ESP_OK) {
+    result = httpd_resp_send_chunk(
+        request, reinterpret_cast<const char *>(_captureBuffer),
+        samples * sizeof(int16_t));
+  }
+  if (result == ESP_OK) {
+    result = httpd_resp_send_chunk(request, nullptr, 0);
+  }
+  xSemaphoreGive(_audioMutex);
+  return result;
 }
