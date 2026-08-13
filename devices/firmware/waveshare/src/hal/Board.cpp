@@ -12,9 +12,11 @@ namespace {
 Arduino_DataBus *displayBus =
     new Arduino_ESP32QSPI(LCD_CS_PIN, LCD_SCLK_PIN, LCD_SDIO0_PIN,
                           LCD_SDIO1_PIN, LCD_SDIO2_PIN, LCD_SDIO3_PIN);
-/// Shared display panel instance.
-Arduino_SH8601 *displayPanel = new Arduino_SH8601(
-    displayBus, GFX_NOT_DEFINED, 0, SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX);
+/// Shared display panel instance. The V2 panel's visible 368-pixel area begins
+/// at column 16 in the CO5300's 480-pixel address space.
+Arduino_CO5300 *displayPanel = new Arduino_CO5300(
+    displayBus, GFX_NOT_DEFINED, 0, SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX, 16, 0, 0,
+    0);
 
 /// Power-management IC driver instance.
 XPowersPMU pmu;
@@ -134,7 +136,7 @@ void update() { pollPmuButton(); }
  * @brief Access the shared display driver.
  * @return Reference to the display panel.
  */
-Arduino_SH8601 &display() { return *displayPanel; }
+Arduino_CO5300 &display() { return *displayPanel; }
 
 /**
  * @brief Read the current state of button A.

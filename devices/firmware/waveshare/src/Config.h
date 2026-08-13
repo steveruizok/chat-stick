@@ -64,7 +64,7 @@ constexpr bool WIFI_DISABLE_SLEEP_DURING_CONNECT = false;
 constexpr bool WIFI_SCAN_BEFORE_FALLBACK_CONNECT = false;
 constexpr bool WIFI_USE_FAST_CONNECT_HINTS = false;
 constexpr bool WIFI_SKIP_SAVED_CONFIGURED_DUPLICATES = false;
-constexpr bool WIFI_LOG_CONNECT_DETAILS = false;
+constexpr bool WIFI_LOG_CONNECT_DETAILS = true;
 constexpr unsigned long WIFI_CONNECT_POLL_MS = 250;
 
 // ============= Device =============
@@ -94,7 +94,7 @@ constexpr int DEFAULT_VOLUME = 180;
 constexpr bool SHOW_BOOT_LOG_ON_DISPLAY = false;
 constexpr bool SHOW_DEBUG_TEXT_ON_DISPLAY = false;
 
-// ============= Hardware (Waveshare ESP32-S3-Touch-AMOLED-1.8) =============
+// ===== Hardware (Waveshare ESP32-S3-Touch-AMOLED-1.8 V2 / CO5300) =====
 constexpr int LCD_SDIO0_PIN = 4;
 constexpr int LCD_SDIO1_PIN = 5;
 constexpr int LCD_SDIO2_PIN = 6;

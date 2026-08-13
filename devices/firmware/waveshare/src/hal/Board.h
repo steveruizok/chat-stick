@@ -17,8 +17,8 @@ const DeviceCapabilities &capabilities();
 /// Service board-level background work.
 void update();
 
-/// Shared display driver instance.
-Arduino_SH8601 &display();
+/// Shared display driver instance (Waveshare V2 / CO5300 panel).
+Arduino_CO5300 &display();
 
 /// Whether button A is currently pressed.
 bool buttonAIsPressed();
