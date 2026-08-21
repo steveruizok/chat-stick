@@ -12,11 +12,18 @@ namespace {
 Arduino_DataBus *displayBus =
     new Arduino_ESP32QSPI(LCD_CS_PIN, LCD_SCLK_PIN, LCD_SDIO0_PIN,
                           LCD_SDIO1_PIN, LCD_SDIO2_PIN, LCD_SDIO3_PIN);
-/// Shared display panel instance. The V2 panel's visible 368-pixel area begins
-/// at column 16 in the CO5300's 480-pixel address space.
-Arduino_CO5300 *displayPanel = new Arduino_CO5300(
-    displayBus, GFX_NOT_DEFINED, 0, SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX, 16, 0, 0,
-    0);
+/// Shared display panel instance. The concrete driver is selected per build
+/// (see "Panel variant" in Config.h); everything outside this file only sees
+/// the common Arduino_OLED interface.
+#if defined(WAVESHARE_PANEL_CO5300)
+Arduino_OLED *displayPanel = new Arduino_CO5300(
+    displayBus, GFX_NOT_DEFINED, 0, SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX,
+    LCD_PANEL_COL_OFFSET, 0, 0, 0);
+#else
+Arduino_OLED *displayPanel = new Arduino_SH8601(
+    displayBus, GFX_NOT_DEFINED, 0, SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX,
+    LCD_PANEL_COL_OFFSET, 0, 0, 0);
+#endif
 
 /// Power-management IC driver instance.
 XPowersPMU pmu;
@@ -104,6 +111,8 @@ bool init() {
   pinMode(AUDIO_PA_ENABLE_PIN, OUTPUT);
   digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
 
+  Log::client("Board", "panel=%s", PANEL_NAME);
+
   Wire.begin(BOARD_I2C_SDA_PIN, BOARD_I2C_SCL_PIN);
   Wire.setClock(400000);
 
@@ -136,7 +145,7 @@ void update() { pollPmuButton(); }
  * @brief Access the shared display driver.
  * @return Reference to the display panel.
  */
-Arduino_CO5300 &display() { return *displayPanel; }
+Arduino_OLED &display() { return *displayPanel; }
 
 /**
  * @brief Read the current state of button A.

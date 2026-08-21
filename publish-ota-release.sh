@@ -3,7 +3,12 @@
 # Devices on an older version will pick this up on next boot.
 #
 # Releasing a new version:
-#   1. ./publish-ota-release.sh [m5-stick|waveshare]
+#   1. ./publish-ota-release.sh [m5-stick|waveshare-v1|waveshare-v2]
+#
+# The two Waveshare panel variants are separate OTA lineages: waveshare-v1
+# publishes under chat-stick/firmware/waveshare/ (the original SH8601 board's
+# existing path, FIRMWARE_DEVICE "waveshare") and waveshare-v2 under
+# chat-stick/firmware/waveshare-v2/ (FIRMWARE_DEVICE "waveshare-v2").
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -12,7 +17,7 @@ DEVICE="${FIRMWARE_DEVICE:-m5-stick}"
 BUCKET="m5-stick-assets"
 
 usage() {
-  echo "Usage: $0 [m5-stick|waveshare]" >&2
+  echo "Usage: $0 [m5-stick|waveshare-v1|waveshare-v2]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -25,8 +30,12 @@ while [[ $# -gt 0 ]]; do
     --device=*)
       DEVICE="${1#--device=}"
       ;;
-    m5-stick|waveshare)
+    m5-stick|waveshare-v1|waveshare-v2)
       DEVICE="$1"
+      ;;
+    waveshare)
+      echo "Error: 'waveshare' is ambiguous; use waveshare-v1 (SH8601 panel) or waveshare-v2 (CO5300 panel)" >&2
+      exit 1
       ;;
     *)
       usage
@@ -36,11 +45,33 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-FIRMWARE_DIR="devices/firmware/$DEVICE"
+# Map the device name to its project directory, PlatformIO env, and the OTA
+# device id the worker uses (FIRMWARE_DEVICE in Config.h / R2 key prefix).
+PIO_ENV=""
+OTA_DEVICE="$DEVICE"
+case "$DEVICE" in
+  waveshare-v1)
+    FIRMWARE_DIR="devices/firmware/waveshare"
+    PIO_ENV="waveshare-v1"
+    OTA_DEVICE="waveshare"
+    ;;
+  waveshare-v2)
+    FIRMWARE_DIR="devices/firmware/waveshare"
+    PIO_ENV="waveshare-v2"
+    OTA_DEVICE="waveshare-v2"
+    ;;
+  waveshare)
+    echo "Error: 'waveshare' is ambiguous; use waveshare-v1 (SH8601 panel) or waveshare-v2 (CO5300 panel)" >&2
+    exit 1
+    ;;
+  *)
+    FIRMWARE_DIR="devices/firmware/$DEVICE"
+    ;;
+esac
 CONFIG_H="$FIRMWARE_DIR/src/Config.h"
 CREDENTIALS_H="$FIRMWARE_DIR/src/credentials.h"
 PLATFORMIO_INI="$FIRMWARE_DIR/platformio.ini"
-KEY_PREFIX="chat-stick/firmware/$DEVICE"
+KEY_PREFIX="chat-stick/firmware/$OTA_DEVICE"
 
 if [[ ! -d "$FIRMWARE_DIR" ]]; then
   echo "Error: unknown firmware device '$DEVICE'" >&2
@@ -48,9 +79,11 @@ if [[ ! -d "$FIRMWARE_DIR" ]]; then
   exit 1
 fi
 
-PIO_ENV=$(
-  sed -n 's/^\[env:\(.*\)\]$/\1/p' "$PLATFORMIO_INI" | head -1
-)
+if [[ -z "$PIO_ENV" ]]; then
+  PIO_ENV=$(
+    sed -n 's/^\[env:\(.*\)\]$/\1/p' "$PLATFORMIO_INI" | head -1
+  )
+fi
 if [[ -z "$PIO_ENV" ]]; then
   echo "Error: could not parse PlatformIO env from $PLATFORMIO_INI" >&2
   exit 1
@@ -74,7 +107,7 @@ if [[ -z "$CHECK_URL" && -f "$CREDENTIALS_H" ]]; then
       || true
   )
   if [[ -n "$PRODUCTION_HOST" ]]; then
-    CHECK_URL="https://$PRODUCTION_HOST/firmware/check?version=0&device=$DEVICE"
+    CHECK_URL="https://$PRODUCTION_HOST/firmware/check?version=0&device=$OTA_DEVICE"
   fi
 fi
 
@@ -127,11 +160,11 @@ fi
 
 KEY="$KEY_PREFIX/firmware-v$VERSION.bin"
 
-echo "Publishing $DEVICE firmware v$VERSION → $BUCKET/$KEY"
+echo "Publishing $OTA_DEVICE firmware v$VERSION (env $PIO_ENV) → $BUCKET/$KEY"
 echo
 
 echo "[2/3] Building firmware..."
-(cd "$FIRMWARE_DIR" && pio run)
+(cd "$FIRMWARE_DIR" && pio run -e "$PIO_ENV")
 
 if [[ ! -f "$FIRMWARE_BIN" ]]; then
   echo "Error: $FIRMWARE_BIN not found after build" >&2
@@ -145,5 +178,5 @@ echo "[3/3] Uploading $SIZE bytes to R2..."
 (cd server && npx wrangler r2 object put "$BUCKET/$KEY" --file="../$FIRMWARE_BIN" --remote)
 
 echo
-echo "Published $DEVICE firmware v$VERSION ($SIZE bytes)"
+echo "Published $OTA_DEVICE firmware v$VERSION ($SIZE bytes)"
 echo "Devices on older versions will install this on next boot."

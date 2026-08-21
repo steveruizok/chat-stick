@@ -2,9 +2,12 @@
 # Build and flash firmware to a USB-connected device.
 #
 # Usage:
-#   ./flash.sh [m5-stick|waveshare|stack-chan] [--monitor] [--port /dev/cu.usbmodem101]
-#   PORT=/dev/cu.usbmodem101 ./flash.sh waveshare
+#   ./flash.sh [m5-stick|waveshare-v1|waveshare-v2|stack-chan] [--monitor] [--port /dev/cu.usbmodem101]
+#   PORT=/dev/cu.usbmodem101 ./flash.sh waveshare-v2
 # Pass --monitor to also open the serial monitor after flashing.
+#
+# The Waveshare board has two panel revisions built from one project:
+# waveshare-v1 (original, SH8601) and waveshare-v2 (V2, CO5300).
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -14,7 +17,7 @@ PORT="${FIRMWARE_PORT:-${PORT:-}}"
 MONITOR=false
 
 usage() {
-  echo "Usage: $0 [m5-stick|waveshare|stack-chan] [--monitor] [--port /dev/cu.usbmodem101]" >&2
+  echo "Usage: $0 [m5-stick|waveshare-v1|waveshare-v2|stack-chan] [--monitor] [--port /dev/cu.usbmodem101]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -38,8 +41,12 @@ while [[ $# -gt 0 ]]; do
     --port=*)
       PORT="${1#--port=}"
       ;;
-    m5-stick|waveshare|stack-chan)
+    m5-stick|waveshare-v1|waveshare-v2|stack-chan)
       DEVICE="$1"
+      ;;
+    waveshare)
+      echo "Error: 'waveshare' is ambiguous; use waveshare-v1 (SH8601 panel) or waveshare-v2 (CO5300 panel)" >&2
+      exit 1
       ;;
     *)
       usage
@@ -49,11 +56,30 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-FIRMWARE_DIR="devices/firmware/$DEVICE"
+# Map a device name to its PlatformIO project directory and env. The Waveshare
+# board has two panel variants built from one project.
+PIO_ENV=""
+case "$DEVICE" in
+  waveshare-v1|waveshare-v2)
+    FIRMWARE_DIR="devices/firmware/waveshare"
+    PIO_ENV="$DEVICE"
+    ;;
+  waveshare)
+    echo "Error: 'waveshare' is ambiguous; use waveshare-v1 (SH8601 panel) or waveshare-v2 (CO5300 panel)" >&2
+    exit 1
+    ;;
+  *)
+    FIRMWARE_DIR="devices/firmware/$DEVICE"
+    ;;
+esac
 if [[ ! -d "$FIRMWARE_DIR" ]]; then
   echo "Error: unknown firmware device '$DEVICE'" >&2
   usage
   exit 1
+fi
+PIO_ENV_ARGS=()
+if [[ -n "$PIO_ENV" ]]; then
+  PIO_ENV_ARGS=(-e "$PIO_ENV")
 fi
 
 if [[ -z "$PORT" ]]; then
@@ -79,8 +105,8 @@ if [[ -z "$PORT" ]]; then
   PORT="${PORT_CANDIDATES[0]}"
 fi
 
-echo "Using $PORT for $DEVICE"
-(cd "$FIRMWARE_DIR" && pio run -t upload --upload-port "$PORT")
+echo "Using $PORT for $DEVICE${PIO_ENV:+ (env $PIO_ENV)}"
+(cd "$FIRMWARE_DIR" && pio run "${PIO_ENV_ARGS[@]}" -t upload --upload-port "$PORT")
 
 if $MONITOR; then
   (cd "$FIRMWARE_DIR" && pio device monitor --port "$PORT")

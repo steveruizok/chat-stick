@@ -67,8 +67,30 @@ constexpr bool WIFI_SKIP_SAVED_CONFIGURED_DUPLICATES = false;
 constexpr bool WIFI_LOG_CONNECT_DETAILS = true;
 constexpr unsigned long WIFI_CONNECT_POLL_MS = 250;
 
+// ============= Panel variant =============
+// The Waveshare ESP32-S3-Touch-AMOLED-1.8 shipped with two different AMOLED
+// driver ICs. Exactly one of these is defined by the PlatformIO env
+// (see platformio.ini): WAVESHARE_PANEL_SH8601 (original) or
+// WAVESHARE_PANEL_CO5300 (V2). The panel ID cannot be read back over the
+// write-only QSPI bus, so the variant is chosen at build time.
+#if defined(WAVESHARE_PANEL_CO5300) && defined(WAVESHARE_PANEL_SH8601)
+#error "Define only one of WAVESHARE_PANEL_SH8601 / WAVESHARE_PANEL_CO5300"
+#elif !defined(WAVESHARE_PANEL_CO5300) && !defined(WAVESHARE_PANEL_SH8601)
+#error "Build with a waveshare-v1 or waveshare-v2 PlatformIO env (see platformio.ini)"
+#endif
+
 // ============= Device =============
+// FIRMWARE_DEVICE is the OTA lineage: the worker serves
+// chat-stick/firmware/<FIRMWARE_DEVICE>/firmware-v<N>.bin, so each panel
+// variant needs its own name or a board would pull a binary built for the
+// other controller.
+#if defined(WAVESHARE_PANEL_CO5300)
+constexpr const char *FIRMWARE_DEVICE = "waveshare-v2";
+constexpr const char *PANEL_NAME = "CO5300";
+#else
 constexpr const char *FIRMWARE_DEVICE = "waveshare";
+constexpr const char *PANEL_NAME = "SH8601";
+#endif
 constexpr const char *DEVICE_ID = "waveshare-amoled18-live";
 constexpr int FIRMWARE_VERSION = 11;
 
@@ -94,13 +116,21 @@ constexpr int DEFAULT_VOLUME = 180;
 constexpr bool SHOW_BOOT_LOG_ON_DISPLAY = false;
 constexpr bool SHOW_DEBUG_TEXT_ON_DISPLAY = false;
 
-// ===== Hardware (Waveshare ESP32-S3-Touch-AMOLED-1.8 V2 / CO5300) =====
+// ============= Hardware (Waveshare ESP32-S3-Touch-AMOLED-1.8) =============
 constexpr int LCD_SDIO0_PIN = 4;
 constexpr int LCD_SDIO1_PIN = 5;
 constexpr int LCD_SDIO2_PIN = 6;
 constexpr int LCD_SDIO3_PIN = 7;
 constexpr int LCD_SCLK_PIN = 11;
 constexpr int LCD_CS_PIN = 12;
+// First visible column in the controller's address space. The CO5300 addresses
+// 480 columns and the V2 panel's 368 visible pixels start at column 16; the
+// SH8601 panel is addressed from column 0.
+#if defined(WAVESHARE_PANEL_CO5300)
+constexpr uint8_t LCD_PANEL_COL_OFFSET = 16;
+#else
+constexpr uint8_t LCD_PANEL_COL_OFFSET = 0;
+#endif
 
 constexpr int BOARD_I2C_SDA_PIN = 15;
 constexpr int BOARD_I2C_SCL_PIN = 14;

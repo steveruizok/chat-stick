@@ -16,7 +16,7 @@ ESP32-S3 device ──WebSocket──▶ Cloudflare Worker (Durable Object) ─�
 Two independent codebases in one repo:
 
 - **`devices/firmware/m5-stick/`** — PlatformIO/Arduino C++ project targeting M5StickS3
-- **`devices/firmware/waveshare/`** — PlatformIO/Arduino C++ project targeting Waveshare ESP32-S3 Touch AMOLED 1.8
+- **`devices/firmware/waveshare/`** — PlatformIO/Arduino C++ project targeting Waveshare ESP32-S3 Touch AMOLED 1.8. Two PlatformIO envs from one source tree: `waveshare-v1` (original board, SH8601 panel, OTA device `waveshare`) and `waveshare-v2` (V2 board, CO5300 panel, OTA device `waveshare-v2`). The panel is selected at compile time via `-DWAVESHARE_PANEL_SH8601` / `-DWAVESHARE_PANEL_CO5300`; only `Config.h` and `hal/Board.cpp` branch on it
 - **`server/`** — Cloudflare Worker (TypeScript) with Durable Objects, D1, Vectorize, Workers AI
 
 ## Build & Run Commands
@@ -42,7 +42,7 @@ curl http://localhost:8799/index
 
 ```bash
 cd devices/firmware/m5-stick      # or devices/firmware/waveshare
-pio run -t upload          # build & flash
+pio run -t upload          # build & flash (waveshare: add -e waveshare-v1 or -e waveshare-v2)
 pio device monitor         # serial monitor (115200 baud)
 python monitor.py          # alternative serial monitor
 ```
@@ -101,17 +101,17 @@ All deployment-specific config is gitignored. Templates exist at:
 
 ## Convenience Scripts (repo root)
 
-- `./flash.sh [m5-stick|waveshare] [--monitor]` — build firmware and upload over USB
+- `./flash.sh [m5-stick|waveshare-v1|waveshare-v2|stack-chan] [--monitor]` — build firmware and upload over USB
 - `./deploy.sh` — `wrangler deploy` the Cloudflare Worker
-- `./publish-ota-release.sh [m5-stick|waveshare]` — bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2 under `chat-stick/firmware/<device>/`
+- `./publish-ota-release.sh [m5-stick|waveshare-v1|waveshare-v2]` — bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2 under `chat-stick/firmware/<device>/` (`waveshare-v1` publishes as device `waveshare`)
 - `./publish.sh` — publish OTA + deploy worker (chains the two above)
 
 ## Releasing Firmware (OTA)
 
-1. Run `./publish-ota-release.sh m5-stick` or `./publish-ota-release.sh waveshare`
+1. Run `./publish-ota-release.sh m5-stick`, `./publish-ota-release.sh waveshare-v1`, or `./publish-ota-release.sh waveshare-v2`
 2. Devices running an older version pick up the new binary on next boot via `/firmware/check` → `/firmware/download`
 
-The worker auto-detects the highest `firmware-v<N>.bin` per device in R2; there's no separate version registry. Because `credentials.h` is compiled into the binary, **never commit or publish built `.bin` files** — `strings` will surface WiFi creds and the worker URL.
+The worker auto-detects the highest `firmware-v<N>.bin` per device in R2; there's no separate version registry. Valid device names are whitelisted in `FIRMWARE_DEVICE_IDS` in `server/src/index.ts` — unknown names silently fall back to `m5-stick`, so add any new `FIRMWARE_DEVICE` there too. Because `credentials.h` is compiled into the binary, **never commit or publish built `.bin` files** — `strings` will surface WiFi creds and the worker URL.
 
 ## Display Layout
 
