@@ -17,8 +17,10 @@ const DeviceCapabilities &capabilities();
 /// Service board-level background work.
 void update();
 
-/// Shared display driver instance.
-Arduino_SH8601 &display();
+/// Shared display driver instance. The concrete panel (SH8601 on the original
+/// board, CO5300 on V2) is chosen at build time; callers use the common
+/// Arduino_OLED interface.
+Arduino_OLED &display();
 
 /// Whether button A is currently pressed.
 bool buttonAIsPressed();

@@ -79,7 +79,7 @@ wrangler d1 migrations apply DB --remote
 
 ```bash
 cd devices/firmware/m5-stick
-# or: cd devices/firmware/waveshare
+# or: cd devices/firmware/waveshare   (then pio run -e waveshare-v1 or -e waveshare-v2)
 
 cp src/credentials.h.example src/credentials.h
 # Edit src/credentials.h:
@@ -94,7 +94,9 @@ pio run -t upload
 pio device monitor
 ```
 
-From the repository root, `./flash.sh m5-stick --monitor`, `./flash.sh waveshare --monitor`, and `./flash.sh stack-chan --monitor` build, flash, and optionally open the monitor.
+From the repository root, `./flash.sh m5-stick --monitor`, `./flash.sh waveshare-v1 --monitor` / `./flash.sh waveshare-v2 --monitor`, and `./flash.sh stack-chan --monitor` build, flash, and optionally open the monitor.
+
+The Waveshare ESP32-S3-Touch-AMOLED-1.8 shipped with two different AMOLED driver ICs, so the `waveshare/` project has two PlatformIO envs built from the same source: `waveshare-v1` for the original board (SH8601 panel) and `waveshare-v2` for the V2 board (CO5300 panel). The panel cannot be detected at runtime over the write-only QSPI bus, so pick the env that matches your hardware; flashing the wrong one leaves the screen blank or shifted but otherwise harmless.
 
 The device also has a captive WiFi setup flow. From the menu, use `Device -> Set up WiFi`, join the `chat-stick-setup` access point, and submit credentials in the browser form.
 
@@ -148,8 +150,8 @@ For local development, add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to `server/.dev.
 - `GET /ping` — device connectivity check. Requires `DEVICE_AUTH_TOKEN` when configured.
 - `GET /history/:deviceId` — recent conversations for a device.
 - `GET /session/:chatId` — last saved assistant message for a chat.
-- `GET /firmware/check?version=<n>&device=<m5-stick|waveshare>` — returns OTA availability for a device.
-- `GET /firmware/download?device=<m5-stick|waveshare>` — downloads the latest firmware binary from R2.
+- `GET /firmware/check?version=<n>&device=<m5-stick|waveshare|waveshare-v2>` — returns OTA availability for a device.
+- `GET /firmware/download?device=<m5-stick|waveshare|waveshare-v2>` — downloads the latest firmware binary from R2.
 - `GET /admin/index` — indexes `src/docs-index.json` into Vectorize.
 - `GET /admin/search?q=...` — tests Vectorize search.
 - `GET /ws?device_id=...&chat_id=...` — device WebSocket endpoint.
@@ -232,18 +234,18 @@ Convenience scripts:
 
 | Script | What it does |
 | --- | --- |
-| `./flash.sh [m5-stick\|waveshare] [--monitor]` | Build firmware and upload over USB. |
+| `./flash.sh [m5-stick\|waveshare-v1\|waveshare-v2\|stack-chan] [--monitor]` | Build firmware and upload over USB. |
 | `./deploy.sh` | Deploy the Cloudflare Worker. |
-| `./publish-ota-release.sh [m5-stick\|waveshare]` | Bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2. |
-| `./publish.sh [m5-stick\|waveshare]` | Publish the OTA binary, then deploy the worker. |
+| `./publish-ota-release.sh [m5-stick\|waveshare-v1\|waveshare-v2]` | Bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2. |
+| `./publish.sh [m5-stick\|waveshare-v1\|waveshare-v2]` | Publish the OTA binary, then deploy the worker. |
 
 To cut a firmware release:
 
 1. Confirm `BUCKET` in `publish-ota-release.sh` matches your R2 bucket.
-2. Run `./publish-ota-release.sh m5-stick` or `./publish-ota-release.sh waveshare`.
+2. Run `./publish-ota-release.sh m5-stick`, `./publish-ota-release.sh waveshare-v1`, or `./publish-ota-release.sh waveshare-v2`.
 3. Devices on older versions install the update on next boot, or from `Device -> Check for updates`.
 
-The worker finds the latest available firmware by listing `chat-stick/firmware/<device>/firmware-v<N>.bin` in R2 and choosing the highest version. For M5StickS3, it also checks the legacy `chat-stick/firmware/firmware-v<N>.bin` path. `publish-ota-release.sh` asks the deployed worker for that latest version before building; set `OTA_CHECK_URL` to override the default URL derived from the selected device's `src/credentials.h`.
+The worker finds the latest available firmware by listing `chat-stick/firmware/<device>/firmware-v<N>.bin` in R2 and choosing the highest version. For M5StickS3, it also checks the legacy `chat-stick/firmware/firmware-v<N>.bin` path. The two Waveshare panel variants are separate OTA lineages: `waveshare-v1` builds identify as device `waveshare` (the original path), `waveshare-v2` builds as `waveshare-v2`, so a board never downloads a binary built for the other panel controller. `publish-ota-release.sh` asks the deployed worker for that latest version before building; set `OTA_CHECK_URL` to override the default URL derived from the selected device's `src/credentials.h`.
 
 ## Credentials
 
