@@ -111,6 +111,12 @@ public:
   /// Remove any stored body image.
   void clearImage();
 
+  /// Write the framebuffer to a stream as hex rows (debug diagnostics).
+  void dumpFramebuffer(Stream &out) const;
+
+  /// Push the entire framebuffer to the panel, bypassing the dirty-rect diff.
+  void forceFullRepaint() const { flushFrame(true); }
+
   /// Whether a stored image is currently available for rendering.
   bool hasImage() const { return _imageBuffer != nullptr; }
 

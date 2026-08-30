@@ -1343,12 +1343,19 @@ export class LiveSession {
 		if (msg.serverContent) {
 			const sc = msg.serverContent
 
-			// Model audio — decode base64 and forward as raw binary
+			// Model audio — decode base64 and forward as raw binary. Split into
+			// small frames: the device pumps its websocket on the UI loop and a
+			// recv blocks until the whole frame has arrived, so relaying a
+			// multi-second audio part as one frame freezes the screen for the
+			// entire receive. 4KB is ~85ms of 24kHz PCM.
 			if (sc.modelTurn?.parts) {
+				const FRAME_BYTES = 4096
 				for (const part of sc.modelTurn.parts) {
 					if (part.inlineData?.data) {
 						const raw = base64ToArrayBuffer(part.inlineData.data)
-						this.deviceWs?.send(raw)
+						for (let offset = 0; offset < raw.byteLength; offset += FRAME_BYTES) {
+							this.deviceWs?.send(raw.slice(offset, offset + FRAME_BYTES))
+						}
 					}
 				}
 			}

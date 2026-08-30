@@ -341,6 +341,18 @@ void AppController::setup() {
 void AppController::loop() {
   Board::update();
 
+#ifdef FRAMEBUFFER_DEBUG_COMMANDS
+  while (Serial.available()) {
+    const int command = Serial.read();
+    if (command == 'D') {
+      _display.dumpFramebuffer(Serial);
+    } else if (command == 'R') {
+      Log::client("Display", "forced full repaint");
+      _display.forceFullRepaint();
+    }
+  }
+#endif
+
   processPlayback();
 
   const bool audioActive = _appState == AppState::Playing;
@@ -1760,8 +1772,9 @@ void AppController::renderIfNeeded() {
   }
 
   const unsigned long now = millis();
-  // Cap animation paints at 10 fps whenever audio is buffering or playing, or
-  // a reveal is mid-flight. The Thinking state is included so the paints
+  // Cap animation paints at kAnimationRenderFrameMs whenever audio is
+  // buffering or playing, or a reveal is mid-flight. Thinking is included so
+  // the paints
   // triggered per websocket audio frame (via onAudio -> serviceUi) can't slow
   // the pre-playback buffering that time-to-first-audio depends on. Menu
   // interaction (non-Chat region) stays unthrottled unless the speaker is
@@ -1785,7 +1798,20 @@ void AppController::renderIfNeeded() {
 
   _renderInProgress = true;
   _screenDirty = false;
+#ifdef FRAMEBUFFER_DEBUG_COMMANDS
+  {
+    static unsigned long lastPaintMs = 0;
+    const unsigned long paintStart = millis();
+    _display.render(buildDisplayState());
+    const unsigned long paintEnd = millis();
+    Log::client("Render", "interval=%lu took=%lu throttled=%d",
+                lastPaintMs == 0 ? 0 : paintStart - lastPaintMs,
+                paintEnd - paintStart, throttled ? 1 : 0);
+    lastPaintMs = paintStart;
+  }
+#else
   _display.render(buildDisplayState());
+#endif
   _renderInProgress = false;
 }
 

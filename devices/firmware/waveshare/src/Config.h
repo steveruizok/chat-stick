@@ -127,6 +127,10 @@ constexpr int DEFAULT_VOLUME = 200;
 constexpr bool SHOW_BOOT_LOG_ON_DISPLAY = false;
 constexpr bool SHOW_DEBUG_TEXT_ON_DISPLAY = false;
 
+// Serial debug commands: 'D' dumps the framebuffer as hex rows, 'R' forces a
+// full-screen repaint. For diagnosing panel/GRAM issues; harmless to leave on.
+#define FRAMEBUFFER_DEBUG_COMMANDS 1
+
 // ============= Hardware (Waveshare ESP32-S3-Touch-AMOLED-1.8) =============
 constexpr int LCD_SDIO0_PIN = 4;
 constexpr int LCD_SDIO1_PIN = 5;

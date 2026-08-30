@@ -90,11 +90,12 @@ private:
   /// Trailing characters still ramping to full brightness during a reveal.
   static constexpr int kTextRevealFadeChars = 3;
 
-  /// Animation paint cadence (10 fps) while audio is buffering or playing, or
+  /// Animation paint cadence (30 fps) while audio is buffering or playing, or
   /// while a text reveal is running. Painting is the most expensive thing the
   /// main loop does, and it shares that loop with the websocket pump that
-  /// keeps the playback ring buffer fed.
-  static constexpr unsigned long kAnimationRenderFrameMs = 100;
+  /// keeps the playback ring buffer fed. Measured paints run 8-29 ms, so this
+  /// still leaves the loop most of its time.
+  static constexpr unsigned long kAnimationRenderFrameMs = 33;
 
   /// Samples captured in one microphone chunk.
   static constexpr int kCaptureChunkSamples =

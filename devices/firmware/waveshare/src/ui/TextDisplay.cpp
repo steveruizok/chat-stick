@@ -205,6 +205,31 @@ void TextDisplay::clearImage() {
   _imageHeight = 0;
 }
 
+void TextDisplay::dumpFramebuffer(Stream &out) const {
+  if (!_framebuffer) {
+    out.println("FBDUMP none");
+    return;
+  }
+  out.printf("FBDUMP BEGIN %d %d\n", SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX);
+  static const char kHex[] = "0123456789abcdef";
+  char line[SCREEN_WIDTH_PX * 4 + 1];
+  for (int y = 0; y < SCREEN_HEIGHT_PX; y++) {
+    const uint16_t *row =
+        _framebuffer + static_cast<size_t>(y) * SCREEN_WIDTH_PX;
+    int n = 0;
+    for (int x = 0; x < SCREEN_WIDTH_PX; x++) {
+      const uint16_t v = row[x];
+      line[n++] = kHex[(v >> 12) & 0xF];
+      line[n++] = kHex[(v >> 8) & 0xF];
+      line[n++] = kHex[(v >> 4) & 0xF];
+      line[n++] = kHex[v & 0xF];
+    }
+    line[n] = 0;
+    out.println(line);
+  }
+  out.println("FBDUMP END");
+}
+
 void TextDisplay::markDrawnRows(int y0, int y1) const {
   _drawnMinY = min(_drawnMinY, max(0, y0));
   _drawnMaxY = max(_drawnMaxY, min(SCREEN_HEIGHT_PX - 1, y1));
@@ -337,6 +362,9 @@ void TextDisplay::flushFrame(bool forceFull) const {
                                SCREEN_HEIGHT_PX);
     memcpy(_previousFramebuffer, _framebuffer, kFramebufferBytes);
     _hasPreviousFrame = true;
+#ifdef FRAMEBUFFER_DEBUG_COMMANDS
+    Log::client("Flush", "full rect=%dx%d@%d,%d", dirtyW, dirtyH, minX, minY);
+#endif
     return;
   }
 
@@ -353,6 +381,10 @@ void TextDisplay::flushFrame(bool forceFull) const {
     memcpy(_previousFramebuffer + offset, _framebuffer + offset,
            dirtyW * sizeof(uint16_t));
   }
+#ifdef FRAMEBUFFER_DEBUG_COMMANDS
+  Log::client("Flush", "rect=%dx%d@%d,%d scan=%d..%d", dirtyW, dirtyH, minX,
+              minY, scanMinY, scanMaxY);
+#endif
 }
 
 void TextDisplay::putPixel(int x, int y, uint16_t color) const {
