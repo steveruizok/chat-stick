@@ -7,6 +7,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "jpeg-js": "^0.4.4",
     "mimetext": "^3.0.28",
     "upng-js": "^2.1.0"
   },

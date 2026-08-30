@@ -1,14 +1,15 @@
 /**
  * Image generation and processing for the on-device display.
  *
- * Generates images via Google's Imagen API, then processes them to a 1-bit
- * dithered bitmap sized to whatever the connected device requested (see
- * IMAGE_TARGET_* in each device's Config.h). The M5StickS3 still asks for the
- * 232x112 chat-area box from designs.md; the Waveshare asks for its full
- * 368x448 panel.
+ * Generates images via Google's Gemini image model (the Imagen predict API
+ * was retired), then processes them to a 1-bit dithered bitmap sized to
+ * whatever the connected device requested (see IMAGE_TARGET_* in each
+ * device's Config.h). The M5StickS3 still asks for the 232x112 chat-area box
+ * from designs.md; the Waveshare asks for its full 368x448 panel.
  */
 
 import UPNG from 'upng-js'
+import jpeg from 'jpeg-js'
 
 // Fallback target dimensions for devices that don't declare a size in the
 // connect URL. Matches the M5StickS3 chat-area bounding box (designs.md).
@@ -20,16 +21,22 @@ export const DEFAULT_IMAGE_HEIGHT = 112
 const MAX_IMAGE_WIDTH = 1024
 const MAX_IMAGE_HEIGHT = 1024
 
-// Imagen calls take ~5–15s; cap at 30s.
-const IMAGEN_TIMEOUT_MS = 30000
+// Generation calls take ~5–15s; cap at 30s.
+const IMAGE_GEN_TIMEOUT_MS = 30000
+
+// Current Gemini image-generation model (successor to imagen-4.0-fast, which
+// now 404s). Uses generateContent with IMAGE response modality. The lite tier
+// is plenty for a 1-bit dithered device display.
+const IMAGE_MODEL = 'gemini-3.1-flash-lite-image'
 
 export interface ImageResult {
 	data: string // base64 1-bit packed pixels for device
 	width: number
 	height: number
 	ditheredPng: ArrayBuffer // dithered PNG for storage (matches what device shows)
-	originalPng: ArrayBuffer // full-color Imagen PNG (pre-dither) for archival
-	enhancedPrompt: string // the prompt actually sent to Imagen (with style suffix)
+	originalImage: ArrayBuffer // full-color model output (pre-dither) for archival
+	originalMimeType: string // mime type of originalImage (model returns JPEG today)
+	enhancedPrompt: string // the prompt actually sent to the model (with style suffix)
 }
 
 /**
@@ -48,15 +55,23 @@ export async function generateAndProcessImage(
 		console.log(`[ImageGen] Generating ${width}x${height} image for: "${prompt}"`)
 		const enhancedPrompt = buildEnhancedPrompt(prompt)
 		const aspectRatio = pickImagenAspectRatio(width, height)
-		const imageBase64 = await generateImage(enhancedPrompt, apiKey, aspectRatio)
-		if (!imageBase64) return null
+		const generated = await generateImage(enhancedPrompt, apiKey, aspectRatio)
+		if (!generated) return null
 
-		const pngBuffer = base64ToArrayBuffer(imageBase64)
-		const decoded = UPNG.decode(pngBuffer)
-		const rgba = new Uint8Array(UPNG.toRGBA8(decoded)[0])
-		console.log(`[ImageGen] Decoded PNG: ${decoded.width}x${decoded.height}`)
+		const imageBuffer = base64ToArrayBuffer(generated.base64)
+		const decoded = decodeImage(imageBuffer, generated.mimeType)
+		if (!decoded) return null
+		console.log(
+			`[ImageGen] Decoded ${generated.mimeType}: ${decoded.width}x${decoded.height}`
+		)
 
-		const resized = resizeImageCover(rgba, decoded.width, decoded.height, width, height)
+		const resized = resizeImageCover(
+			decoded.rgba,
+			decoded.width,
+			decoded.height,
+			width,
+			height
+		)
 
 		const grayscale = toGrayscale(resized, width, height)
 		const dithered = floydSteinbergDither(grayscale, width, height)
@@ -79,7 +94,8 @@ export async function generateAndProcessImage(
 			width,
 			height,
 			ditheredPng,
-			originalPng: pngBuffer,
+			originalImage: imageBuffer,
+			originalMimeType: generated.mimeType,
 			enhancedPrompt,
 		}
 	} catch (error) {
@@ -97,7 +113,7 @@ function clampDimension(value: number, fallback: number): number {
 }
 
 /**
- * Imagen 4 fast only accepts a fixed set of aspect ratio presets. Pick the
+ * The image model only accepts a fixed set of aspect ratio presets. Pick the
  * one whose ratio is closest to the requested target so cover-scaling has the
  * least cropping to do.
  */
@@ -106,6 +122,10 @@ function pickImagenAspectRatio(width: number, height: number): string {
 		{ name: '1:1', ratio: 1 },
 		{ name: '4:3', ratio: 4 / 3 },
 		{ name: '3:4', ratio: 3 / 4 },
+		{ name: '4:5', ratio: 4 / 5 },
+		{ name: '5:4', ratio: 5 / 4 },
+		{ name: '3:2', ratio: 3 / 2 },
+		{ name: '2:3', ratio: 2 / 3 },
 		{ name: '16:9', ratio: 16 / 9 },
 		{ name: '9:16', ratio: 9 / 16 },
 	]
@@ -131,14 +151,14 @@ async function generateImage(
 	enhancedPrompt: string,
 	apiKey: string,
 	aspectRatio: string
-): Promise<string | null> {
+): Promise<{ base64: string; mimeType: string } | null> {
 	const controller = new AbortController()
-	const timeoutId = setTimeout(() => controller.abort(), IMAGEN_TIMEOUT_MS)
+	const timeoutId = setTimeout(() => controller.abort(), IMAGE_GEN_TIMEOUT_MS)
 
 	let response: Response
 	try {
 		response = await fetch(
-			'https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-fast-generate-001:predict',
+			`https://generativelanguage.googleapis.com/v1beta/models/${IMAGE_MODEL}:generateContent`,
 			{
 				method: 'POST',
 				headers: {
@@ -146,17 +166,20 @@ async function generateImage(
 					'x-goog-api-key': apiKey,
 				},
 				body: JSON.stringify({
-					instances: [{ prompt: enhancedPrompt }],
-					// Cover scaling later crops the long axis as needed; this just picks
-					// whichever Imagen preset is closest to the device's display.
-					parameters: { sampleCount: 1, aspectRatio },
+					contents: [{ parts: [{ text: enhancedPrompt }] }],
+					generationConfig: {
+						responseModalities: ['IMAGE'],
+						// Cover scaling later crops the long axis as needed; this just
+						// picks whichever preset is closest to the device's display.
+						imageConfig: { aspectRatio },
+					},
 				}),
 				signal: controller.signal,
 			}
 		)
 	} catch (error) {
 		if (error instanceof Error && error.name === 'AbortError') {
-			console.error(`[ImageGen] Imagen API timed out after ${IMAGEN_TIMEOUT_MS}ms`)
+			console.error(`[ImageGen] Image API timed out after ${IMAGE_GEN_TIMEOUT_MS}ms`)
 			return null
 		}
 		throw error
@@ -166,19 +189,54 @@ async function generateImage(
 
 	if (!response.ok) {
 		const errorText = await response.text()
-		console.error(`[ImageGen] Imagen API error: ${response.status} ${errorText}`)
+		console.error(`[ImageGen] Image API error: ${response.status} ${errorText}`)
 		return null
 	}
 
 	const result = (await response.json()) as {
-		predictions?: Array<{ bytesBase64Encoded?: string }>
+		candidates?: Array<{
+			content?: { parts?: Array<{ inlineData?: { mimeType?: string; data?: string } }> }
+		}>
 	}
-	const imageData = result.predictions?.[0]?.bytesBase64Encoded
-	if (!imageData) {
-		console.error('[ImageGen] No image data in Imagen response')
-		return null
+	const parts = result.candidates?.[0]?.content?.parts ?? []
+	for (const part of parts) {
+		if (part.inlineData?.data) {
+			return {
+				base64: part.inlineData.data,
+				mimeType: part.inlineData.mimeType ?? 'image/jpeg',
+			}
+		}
 	}
-	return imageData
+	console.error('[ImageGen] No image data in response')
+	return null
+}
+
+/**
+ * Decode PNG or JPEG bytes to RGBA. The Gemini image model returns JPEG (the
+ * API has no output-format option); PNG support is kept for safety.
+ */
+function decodeImage(
+	buffer: ArrayBuffer,
+	mimeType: string
+): { rgba: Uint8Array; width: number; height: number } | null {
+	if (mimeType === 'image/png') {
+		const decoded = UPNG.decode(buffer)
+		return {
+			rgba: new Uint8Array(UPNG.toRGBA8(decoded)[0]),
+			width: decoded.width,
+			height: decoded.height,
+		}
+	}
+	if (mimeType === 'image/jpeg') {
+		const decoded = jpeg.decode(new Uint8Array(buffer), { useTArray: true })
+		return {
+			rgba: new Uint8Array(decoded.data.buffer, decoded.data.byteOffset, decoded.data.length),
+			width: decoded.width,
+			height: decoded.height,
+		}
+	}
+	console.error(`[ImageGen] Unsupported image mime type: ${mimeType}`)
+	return null
 }
 
 /**

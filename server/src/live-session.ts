@@ -1819,16 +1819,18 @@ export class LiveSession {
 			return
 		}
 
-		// Persist the dithered PNG (what the device shows) and the original full-color
-		// PNG (for archival / future re-dither) to R2 if STORAGE is bound. Best-effort;
-		// failure here doesn't block sending to the device.
+		// Persist the dithered PNG (what the device shows) and the original
+		// full-color model output (for archival / future re-dither) to R2 if
+		// STORAGE is bound. Best-effort; failure here doesn't block sending to
+		// the device.
 		let ditheredKey: string | undefined
 		let originalKey: string | undefined
 		if (this.env.STORAGE) {
 			const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 			const basePath = `chat-stick/assets/${this.deviceId}/images/${turnChatId}-${stamp}`
 			ditheredKey = `${basePath}.png`
-			originalKey = `${basePath}-original.png`
+			const originalExt = result.originalMimeType === 'image/png' ? 'png' : 'jpg'
+			originalKey = `${basePath}-original.${originalExt}`
 			try {
 				await this.env.STORAGE.put(ditheredKey, result.ditheredPng, {
 					httpMetadata: { contentType: 'image/png' },
@@ -1839,10 +1841,10 @@ export class LiveSession {
 				ditheredKey = undefined
 			}
 			try {
-				await this.env.STORAGE.put(originalKey, result.originalPng, {
-					httpMetadata: { contentType: 'image/png' },
+				await this.env.STORAGE.put(originalKey, result.originalImage, {
+					httpMetadata: { contentType: result.originalMimeType },
 				})
-				console.log(`[ImageGen] Stored original PNG at ${originalKey}`)
+				console.log(`[ImageGen] Stored original at ${originalKey}`)
 			} catch (err) {
 				console.error('[ImageGen] R2 upload (original) failed:', err)
 				originalKey = undefined
