@@ -22,6 +22,10 @@ public:
   bool captureChunk();
   bool playNamedSound(const String &name);
   bool playMelody(const String &melody);
+
+  /// Alarm melodies play like normal melodies on this board; the Waveshare
+  /// build boosts them to its reserved alert volume.
+  bool playAlarmMelody(const String &melody) { return playMelody(melody); }
   bool playTone(int frequencyHz, int durationMs);
 
   const int16_t *captureData() const { return _captureChunk; }

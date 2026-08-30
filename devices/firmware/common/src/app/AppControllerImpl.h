@@ -250,7 +250,9 @@ void AppController::setup() {
   };
   callbacks.onVolume = [this](int level) {
     _audio.setVolume(level);
-    _settings.setVolume(level);
+    // Persist what the audio service actually applied (it may clamp into a
+    // calibrated window) so the stored value matches the device state.
+    _settings.setVolume(_audio.volume());
   };
   callbacks.onSetSpeaker = [this](const String &mode) {
     if (!Board::capabilities().externalSpeakerSwitch) {
@@ -1758,15 +1760,27 @@ void AppController::renderIfNeeded() {
   }
 
   const unsigned long now = millis();
-  const bool audioActive = _audio.playbackStarted() || _audio.speakerBusy();
-  if (audioActive) {
-    if (_lastPlaybackRenderMs != 0 &&
-        now - _lastPlaybackRenderMs < kPlaybackRenderFrameMs) {
+  // Cap animation paints at 10 fps whenever audio is buffering or playing, or
+  // a reveal is mid-flight. The Thinking state is included so the paints
+  // triggered per websocket audio frame (via onAudio -> serviceUi) can't slow
+  // the pre-playback buffering that time-to-first-audio depends on. Menu
+  // interaction (non-Chat region) stays unthrottled unless the speaker is
+  // actually running.
+  const bool revealAnimating =
+      _toolTextRevealIndex < static_cast<int>(_toolTextRevealLayout.length());
+  const bool throttled =
+      _audio.playbackStarted() || _audio.speakerBusy() ||
+      (_appRegion == AppRegion::Chat &&
+       (_appState == AppState::Thinking || _appState == AppState::Playing ||
+        revealAnimating));
+  if (throttled) {
+    if (_lastAnimationRenderMs != 0 &&
+        now - _lastAnimationRenderMs < kAnimationRenderFrameMs) {
       return;
     }
-    _lastPlaybackRenderMs = now;
+    _lastAnimationRenderMs = now;
   } else {
-    _lastPlaybackRenderMs = 0;
+    _lastAnimationRenderMs = 0;
   }
 
   _renderInProgress = true;
@@ -2090,7 +2104,7 @@ void AppController::serviceAlarmTrill() {
   }
 
   _lastAlarmSoundMs = now;
-  _audio.playMelody("A5:120 R:40 A5:120 R:40 A5:220");
+  _audio.playAlarmMelody("A5:120 R:40 A5:120 R:40 A5:220");
 }
 
 String AppController::handleSetTimerTool(int durationSeconds,

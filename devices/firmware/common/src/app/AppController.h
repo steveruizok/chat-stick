@@ -90,8 +90,11 @@ private:
   /// Trailing characters still ramping to full brightness during a reveal.
   static constexpr int kTextRevealFadeChars = 3;
 
-  /// Slow display cadence while audio playback is active.
-  static constexpr unsigned long kPlaybackRenderFrameMs = 90;
+  /// Animation paint cadence (10 fps) while audio is buffering or playing, or
+  /// while a text reveal is running. Painting is the most expensive thing the
+  /// main loop does, and it shares that loop with the websocket pump that
+  /// keeps the playback ring buffer fed.
+  static constexpr unsigned long kAnimationRenderFrameMs = 100;
 
   /// Samples captured in one microphone chunk.
   static constexpr int kCaptureChunkSamples =
@@ -191,8 +194,8 @@ private:
   /// Timestamp of the last text reveal frame.
   unsigned long _lastTextRevealMs = 0;
 
-  /// Timestamp of the last display refresh allowed during playback.
-  unsigned long _lastPlaybackRenderMs = 0;
+  /// Timestamp of the last animation-throttled display refresh.
+  unsigned long _lastAnimationRenderMs = 0;
 
   /// Current animated wait-indicator frame.
   int _waitingIndicatorFrame = 0;

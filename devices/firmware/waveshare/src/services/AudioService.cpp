@@ -108,6 +108,19 @@ float noteFrequency(const String &noteToken) {
 int codecVolumeFromLevel(int level) {
   return map(constrain(level, 0, 255), 0, 255, 0, 100);
 }
+
+/**
+ * @brief Clamp a requested speech volume into the calibrated audible window.
+ *        Zero stays mute; anything else lands in [floor, ceiling].
+ * @param level Requested volume level.
+ * @return Clamped volume level.
+ */
+int clampSpeechVolume(int level) {
+  if (level <= 0) {
+    return 0;
+  }
+  return constrain(level, VOLUME_RAW_AUDIBLE_FLOOR, VOLUME_RAW_SPEECH_CEILING);
+}
 } // namespace
 
 /**
@@ -223,10 +236,12 @@ bool AudioService::init() {
 
 /**
  * @brief Set the speaker volume and update the codec if it changed.
- * @param level Volume level in the range 0-255.
+ * @param level Volume level in the range 0-255; nonzero values are clamped
+ *        into the calibrated [VOLUME_RAW_AUDIBLE_FLOOR,
+ *        VOLUME_RAW_SPEECH_CEILING] window.
  */
 void AudioService::setVolume(int level) {
-  _volume = constrain(level, 0, 255);
+  _volume = clampSpeechVolume(level);
   const int nextVolume = codecVolumeFromLevel(_volume);
   if (!takeAudioLock()) {
     return;
@@ -333,19 +348,19 @@ bool AudioService::captureChunk() {
 bool AudioService::playNamedSound(const String &name) {
   const String normalized = name;
   if (normalized.equalsIgnoreCase("beep")) {
-    return playToneSequence("C6:120");
+    return playToneSequence("C6:120", volumeScaledAmplitude());
   }
   if (normalized.equalsIgnoreCase("success")) {
-    return playToneSequence("C6:90 E6:90 G6:140");
+    return playToneSequence("C6:90 E6:90 G6:140", volumeScaledAmplitude());
   }
   if (normalized.equalsIgnoreCase("error")) {
-    return playToneSequence("G4:120 R:40 C4:240");
+    return playToneSequence("G4:120 R:40 C4:240", volumeScaledAmplitude());
   }
   if (normalized.equalsIgnoreCase("alert")) {
-    return playToneSequence("A5:120 R:40 A5:120 R:40 A5:200");
+    return playToneSequence("A5:120 R:40 A5:120 R:40 A5:200", volumeScaledAmplitude());
   }
   if (normalized.equalsIgnoreCase("fanfare")) {
-    return playToneSequence("C5:100 E5:100 G5:100 C6:260");
+    return playToneSequence("C5:100 E5:100 G5:100 C6:260", volumeScaledAmplitude());
   }
 
   return false;
@@ -357,7 +372,7 @@ bool AudioService::playNamedSound(const String &name) {
  * @return True when the melody was scheduled.
  */
 bool AudioService::playMelody(const String &melody) {
-  return playToneSequence(melody);
+  return playToneSequence(melody, volumeScaledAmplitude());
 }
 
 /**
@@ -780,11 +795,42 @@ bool AudioService::playAvailableChunk() {
 }
 
 /**
- * @brief Synthesize and play a sequence of notes synchronously.
- * @param sequence Space- or comma-separated tokens like "C5:120 E5:80".
+ * @brief Play a melody at the reserved alert volume, then restore the
+ *        current speech volume. Synchronous, like playToneSequence().
+ * @param melody Tone-sequence description.
  * @return True when at least one note was played.
  */
-bool AudioService::playToneSequence(const String &sequence) {
+bool AudioService::playAlarmMelody(const String &melody) {
+  stopPlayback();
+  if (!takeAudioLock()) {
+    return false;
+  }
+  if (!configureAudio(PLAY_SAMPLE_RATE)) {
+    releaseAudioLock();
+    return false;
+  }
+  const int alertCodec = codecVolumeFromLevel(VOLUME_RAW_ALERT);
+  if (codec && codecVolume != alertCodec) {
+    es8311_voice_volume_set(codec, alertCodec, nullptr);
+    codecVolume = alertCodec;
+  }
+  const bool played = playToneSequence(melody, 16000.0f);
+  const int speechCodec = codecVolumeFromLevel(_volume);
+  if (codec && codecVolume != speechCodec) {
+    es8311_voice_volume_set(codec, speechCodec, nullptr);
+    codecVolume = speechCodec;
+  }
+  releaseAudioLock();
+  return played;
+}
+
+/**
+ * @brief Synthesize and play a sequence of notes synchronously.
+ * @param sequence Space- or comma-separated tokens like "C5:120 E5:80".
+ * @param amplitude Peak sample amplitude for the synthesized notes.
+ * @return True when at least one note was played.
+ */
+bool AudioService::playToneSequence(const String &sequence, float amplitude) {
   if (sequence.isEmpty()) {
     return false;
   }
@@ -831,7 +877,6 @@ bool AudioService::playToneSequence(const String &sequence) {
     int remainingSamples = PLAY_SAMPLE_RATE * durationMs / 1000;
     float phase = 0.0f;
     const float phaseStep = 2.0f * PI * frequency / PLAY_SAMPLE_RATE;
-    const float amplitude = 16000.0f * (_volume / 255.0f);
     while (remainingSamples > 0) {
       const int samples = min(remainingSamples, kPlaybackChunkSamples);
       for (int i = 0; i < samples; i++) {

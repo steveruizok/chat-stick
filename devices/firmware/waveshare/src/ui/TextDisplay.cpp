@@ -23,6 +23,13 @@ void TextDisplay::init() {
     Log::client("Display", "display.begin failed");
   }
 
+  // The panel init sequence inside begin() turns the display on at high
+  // brightness before anything has written GRAM, so uninitialized memory
+  // shows as a noise pattern at boot. Blank the panel and clear GRAM right
+  // away; AppController restores the configured brightness after init.
+  display.setBrightness(0);
+  display.fillScreen(0x0000);
+
   // Prefer PSRAM for the front buffer. It is large enough for the full screen
   // and keeps rendering independent from SPI display timing.
   _framebuffer = static_cast<uint16_t *>(
@@ -198,10 +205,25 @@ void TextDisplay::clearImage() {
   _imageHeight = 0;
 }
 
+void TextDisplay::markDrawnRows(int y0, int y1) const {
+  _drawnMinY = min(_drawnMinY, max(0, y0));
+  _drawnMaxY = max(_drawnMaxY, min(SCREEN_HEIGHT_PX - 1, y1));
+}
+
 void TextDisplay::clearFrame(uint16_t color) const {
   if (!_framebuffer) {
     Board::display().fillScreen(color);
     return;
+  }
+
+  // A clear resets the drawn-row hint: from here only real draw calls put
+  // content into the frame. Changing the background color itself changes every
+  // pixel, so that case falls back to marking the whole screen drawn.
+  _drawnMinY = SCREEN_HEIGHT_PX;
+  _drawnMaxY = -1;
+  if (color != _lastClearColor) {
+    markDrawnRows(0, SCREEN_HEIGHT_PX - 1);
+    _lastClearColor = color;
   }
 
   // The framebuffer lives in PSRAM, so a per-pixel loop over 165k pixels is
@@ -229,6 +251,14 @@ void TextDisplay::flushFrame(bool forceFull) const {
     return;
   }
 
+  // After this flush the previous framebuffer holds this frame's content, so
+  // its drawn span becomes the baseline for the next diff. The old span is
+  // still needed below to bound this flush's scan.
+  const int prevDrawnMinY = _prevDrawnMinY;
+  const int prevDrawnMaxY = _prevDrawnMaxY;
+  _prevDrawnMinY = _drawnMinY;
+  _prevDrawnMaxY = _drawnMaxY;
+
   auto &display = Board::display();
   if (forceFull || !_previousFramebuffer || !_hasPreviousFrame) {
     // First paint, explicit full paint, or no previous buffer: push the whole
@@ -246,10 +276,15 @@ void TextDisplay::flushFrame(bool forceFull) const {
   int maxY = -1;
   constexpr size_t kRowBytes = SCREEN_WIDTH_PX * sizeof(uint16_t);
 
-  // Find changed rows first with memcmp. That keeps text reveal frames cheap:
-  // most frames touch only a row or two, so there is no need to inspect every
-  // pixel on the screen.
-  for (int y = 0; y < SCREEN_HEIGHT_PX; y++) {
+  // Find changed rows first with memcmp. Changed pixels can only exist where
+  // this frame drew content or where the previous frame's content is being
+  // erased back to background, so the scan is bounded by the union of the two
+  // drawn-row spans — a reveal frame touches a row or two, not the whole
+  // screen's worth of PSRAM.
+  const int scanMinY = max(0, min(_drawnMinY, prevDrawnMinY));
+  const int scanMaxY =
+      min(SCREEN_HEIGHT_PX - 1, max(_drawnMaxY, prevDrawnMaxY));
+  for (int y = scanMinY; y <= scanMaxY; y++) {
     const size_t offset = static_cast<size_t>(y) * SCREEN_WIDTH_PX;
     if (memcmp(_framebuffer + offset, _previousFramebuffer + offset,
                kRowBytes) == 0) {
@@ -327,6 +362,7 @@ void TextDisplay::putPixel(int x, int y, uint16_t color) const {
 
   if (_framebuffer) {
     _framebuffer[static_cast<size_t>(y) * SCREEN_WIDTH_PX + x] = color;
+    markDrawnRows(y, y);
   } else {
     Board::display().drawPixel(x, y, color);
   }
@@ -348,6 +384,7 @@ void TextDisplay::fillRect(int x, int y, int w, int h, uint16_t color) const {
     return;
   }
 
+  markDrawnRows(y0, y1 - 1);
   for (int yy = y0; yy < y1; yy++) {
     uint16_t *row = _framebuffer + static_cast<size_t>(yy) * SCREEN_WIDTH_PX;
     for (int xx = x0; xx < x1; xx++) {
@@ -415,6 +452,7 @@ void TextDisplay::drawText(int x, int y, const String &text, uint16_t color,
       continue;
     }
 
+    markDrawnRows(glyphTop + gyStart, glyphTop + gyEnd - 1);
     for (int gy = gyStart; gy < gyEnd; gy++) {
       uint16_t *row = _framebuffer +
                       static_cast<size_t>(glyphTop + gy) * SCREEN_WIDTH_PX +

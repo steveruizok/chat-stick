@@ -127,6 +127,21 @@ private:
   /// Whether _previousFramebuffer contains valid frame data.
   mutable bool _hasPreviousFrame = false;
 
+  /// Row span written by draw calls since the last clearFrame. Changed pixels
+  /// can only exist where this frame drew content or where the previous frame
+  /// had content that is now erased to background, so flushFrame's diff scan
+  /// is limited to the union of this span and _prevDrawn*. Sentinel values
+  /// (min > max) mean "nothing drawn".
+  mutable int _drawnMinY = SCREEN_HEIGHT_PX;
+  mutable int _drawnMaxY = -1;
+
+  /// Drawn-row span of the frame held in _previousFramebuffer.
+  mutable int _prevDrawnMinY = 0;
+  mutable int _prevDrawnMaxY = SCREEN_HEIGHT_PX - 1;
+
+  /// Background color used by the most recent clearFrame.
+  mutable uint16_t _lastClearColor = 0x0000;
+
   /// Packed 1-bit body image buffer.
   uint8_t *_imageBuffer = nullptr;
 
@@ -138,6 +153,9 @@ private:
 
   /// Stored image height in pixels.
   int _imageHeight = 0;
+
+  /// Record rows [y0, y1] as drawn for flushFrame's diff-scan hint.
+  void markDrawnRows(int y0, int y1) const;
 
   /// Fill the current framebuffer with a solid color.
   void clearFrame(uint16_t color) const;

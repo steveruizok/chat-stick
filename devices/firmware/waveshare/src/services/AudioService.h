@@ -62,6 +62,15 @@ public:
   bool playMelody(const String &melody);
 
   /**
+   * @brief Play a melody at the reserved alert volume (VOLUME_RAW_ALERT),
+   *        louder than the calibrated speech ceiling, then restore the
+   *        current speech volume.
+   * @param melody Melody description string.
+   * @return True on successful playback scheduling.
+   */
+  bool playAlarmMelody(const String &melody);
+
+  /**
    * @brief Play a single synthesized tone.
    * @param frequencyHz Frequency in Hz.
    * @param durationMs Duration in milliseconds.
@@ -250,7 +259,11 @@ private:
   /**
    * @brief Parse and play a tone-sequence string.
    * @param sequence Tone sequence description.
+   * @param amplitude Peak sample amplitude for the synthesized notes.
    * @return True on successful scheduling.
    */
-  bool playToneSequence(const String &sequence);
+  bool playToneSequence(const String &sequence, float amplitude);
+
+  /// Tone amplitude scaled by the current volume level.
+  float volumeScaledAmplitude() const { return 16000.0f * (_volume / 255.0f); }
 };

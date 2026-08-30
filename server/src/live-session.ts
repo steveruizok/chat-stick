@@ -547,6 +547,14 @@ export class LiveSession {
 				setup.historyConfig = { initialHistoryInClientContent: true }
 			}
 
+			// Speaker volume guidance for the Waveshare boards, whose speaker is
+			// calibrated (see devices/firmware/waveshare/src/Config.h): levels
+			// below 100 are inaudible and levels above 230 are uncomfortably loud
+			// for speech, so the firmware clamps nonzero requests into 100-230.
+			const volumeLevelDescription = this.deviceId.startsWith('waveshare')
+				? 'Volume level. 0 mutes. The usable range is 100 (minimum volume, quietest audible) to 230 (max volume, loudest comfortable for speech); nonzero values outside it are clamped. Default is 200. When the user asks for "minimum volume" use 100, "max volume" 230, "medium" about 165.'
+				: 'Volume level from 0 (mute) to 255 (maximum)'
+
 			// Send session setup
 			ws.send(
 				JSON.stringify({
@@ -578,7 +586,7 @@ export class LiveSession {
 											properties: {
 												level: {
 													type: 'INTEGER',
-													description: 'Volume level from 0 (mute) to 255 (maximum)',
+													description: volumeLevelDescription,
 												},
 											},
 											required: ['level'],

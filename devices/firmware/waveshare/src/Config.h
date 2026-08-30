@@ -100,6 +100,17 @@ constexpr int MIC_CHUNK_MS = 100;       // Send a chunk every 100 ms
 constexpr int PLAY_SAMPLE_RATE = 24000; // 24 kHz output (Gemini Live API)
 constexpr int MAX_PLAYBACK_SEC = 30;    // Max response buffer
 
+// Speaker volume calibration (measured 2026-08-30 with the waveshare-*-volcal
+// harness): levels below 100 are inaudible on this board's speaker and levels
+// above 230 are uncomfortably loud for speech. Volume levels keep the raw
+// 0-255 scale, but setVolume() clamps nonzero requests into this window
+// (0 stays mute); the raw maximum is reserved for alarm/alert tones via
+// playAlarmMelody(). The server's set_volume tool description mirrors these
+// numbers so "minimum volume" means 100 and "max volume" means 230.
+constexpr int VOLUME_RAW_AUDIBLE_FLOOR = 100;
+constexpr int VOLUME_RAW_SPEECH_CEILING = 230;
+constexpr int VOLUME_RAW_ALERT = 255;
+
 // ============= Display =============
 constexpr int SCREEN_WIDTH_PX = 368;
 constexpr int SCREEN_HEIGHT_PX = 448;
@@ -112,7 +123,7 @@ constexpr int IMAGE_TARGET_WIDTH = SCREEN_WIDTH_PX;
 constexpr int IMAGE_TARGET_HEIGHT = SCREEN_HEIGHT_PX;
 constexpr int DEFAULT_BRIGHTNESS =
     80; // lower = longer battery; plenty readable indoors
-constexpr int DEFAULT_VOLUME = 180;
+constexpr int DEFAULT_VOLUME = 200;
 constexpr bool SHOW_BOOT_LOG_ON_DISPLAY = false;
 constexpr bool SHOW_DEBUG_TEXT_ON_DISPLAY = false;
 
