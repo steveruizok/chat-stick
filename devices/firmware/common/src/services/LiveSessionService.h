@@ -169,6 +169,14 @@ public:
   void poll();
 
   /**
+   * @brief Queue one log line for shipping to the server's device_logs store.
+   * @param side 'C' for client-side lines, 'S' for server-echo lines.
+   * @param topic Log topic.
+   * @param message Formatted log message.
+   */
+  void noteLog(char side, const char *topic, const char *message);
+
+  /**
    * @brief Reconnect when disconnected and reconnects are allowed.
    * @param enabled Whether reconnect behavior is currently enabled.
    */
@@ -307,6 +315,37 @@ private:
 
   /// Whether the WebSocket is currently connected.
   bool _connected = false;
+
+  /// Ring buffer of log lines queued for shipping to the server. Sized to
+  /// hold a full boot's burst of lines until the WebSocket comes up.
+  static constexpr int kLogShipCapacity = 64;
+
+  /// Max lines per client_log message.
+  static constexpr int kLogShipBatchMax = 8;
+
+  /// Minimum interval between client_log messages.
+  static constexpr unsigned long kLogShipIntervalMs = 1000;
+
+  /// Queued log lines (ring buffer; oldest overwritten when full).
+  String _logShipBuffer[kLogShipCapacity];
+
+  /// Next write index into _logShipBuffer.
+  int _logShipHead = 0;
+
+  /// Number of queued (unshipped) lines.
+  int _logShipCount = 0;
+
+  /// Lines lost to ring overflow since the last successful ship.
+  unsigned int _logShipDropped = 0;
+
+  /// Timestamp of the last client_log message.
+  unsigned long _lastLogShipMs = 0;
+
+  /// Guard so lines logged while shipping don't recurse into the queue.
+  bool _shippingLogs = false;
+
+  /// Send a batch of queued log lines to the server (rate-limited).
+  void flushClientLogs();
 
   /// Whether internal Preferences storage is available.
   bool _prefsReady = false;

@@ -1,6 +1,7 @@
 #include "AudioService.h"
 
 #include "../Config.h"
+#include "../hal/Board.h"
 #include "diag/Log.h"
 #include "../drivers/es8311/es8311.h"
 #include <ESP_I2S.h>
@@ -120,6 +121,21 @@ int clampSpeechVolume(int level) {
     return 0;
   }
   return constrain(level, VOLUME_RAW_AUDIBLE_FLOOR, VOLUME_RAW_SPEECH_CEILING);
+}
+
+/**
+ * @brief Cap a volume level while running on battery.
+ *        High amplifier drive on battery collapses the power rail and the
+ *        AXP2101 shuts the device down at playback start; USB power handles
+ *        the full calibrated range. See VOLUME_RAW_BATTERY_CEILING.
+ * @param level Requested volume level.
+ * @return The level, capped to VOLUME_RAW_BATTERY_CEILING on battery.
+ */
+int capVolumeForPowerSource(int level) {
+  if (Board::usbConnected()) {
+    return level;
+  }
+  return min(level, VOLUME_RAW_BATTERY_CEILING);
 }
 } // namespace
 
@@ -242,7 +258,11 @@ bool AudioService::init() {
  */
 void AudioService::setVolume(int level) {
   _volume = clampSpeechVolume(level);
-  const int nextVolume = codecVolumeFromLevel(_volume);
+  const int effective = capVolumeForPowerSource(_volume);
+  if (effective != _volume) {
+    Log::client("Audio", "battery volume cap: %d -> %d", _volume, effective);
+  }
+  const int nextVolume = codecVolumeFromLevel(effective);
   if (!takeAudioLock()) {
     return;
   }
@@ -809,13 +829,14 @@ bool AudioService::playAlarmMelody(const String &melody) {
     releaseAudioLock();
     return false;
   }
-  const int alertCodec = codecVolumeFromLevel(VOLUME_RAW_ALERT);
+  const int alertCodec =
+      codecVolumeFromLevel(capVolumeForPowerSource(VOLUME_RAW_ALERT));
   if (codec && codecVolume != alertCodec) {
     es8311_voice_volume_set(codec, alertCodec, nullptr);
     codecVolume = alertCodec;
   }
   const bool played = playToneSequence(melody, 16000.0f);
-  const int speechCodec = codecVolumeFromLevel(_volume);
+  const int speechCodec = codecVolumeFromLevel(capVolumeForPowerSource(_volume));
   if (codec && codecVolume != speechCodec) {
     es8311_voice_volume_set(codec, speechCodec, nullptr);
     codecVolume = speechCodec;

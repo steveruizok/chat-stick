@@ -115,6 +115,13 @@ constexpr int MAX_PLAYBACK_SEC = 30;    // Max response buffer
 constexpr int VOLUME_RAW_AUDIBLE_FLOOR = 100;
 constexpr int VOLUME_RAW_SPEECH_CEILING = 230;
 constexpr int VOLUME_RAW_ALERT = 255;
+// On battery, the speaker amp's draw at high volume collapses the power rail
+// and the AXP2101 cuts the device off cleanly at playback start (measured
+// 2026-08-31 via device_logs post-mortems: repeated full playbacks at volume
+// 180 survive, volume 200 kills at play_start; USB power is unaffected).
+// Speech AND alert volume are capped to this while on battery — set below
+// the measured 180 because a less-charged battery sags further under load.
+constexpr int VOLUME_RAW_BATTERY_CEILING = 170;
 
 // ============= Display =============
 constexpr int SCREEN_WIDTH_PX = 368;

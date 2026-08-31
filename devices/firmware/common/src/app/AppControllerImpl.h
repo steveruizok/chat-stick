@@ -64,9 +64,10 @@ const char *resetReasonLabel(esp_reset_reason_t reason) {
 
 void AppController::setup() {
   Serial.begin(115200);
-  if (Board::capabilities().bootDisplay) {
-    Log::setSink(&AppController::bootLogTrampoline, this);
-  }
+  // The sink stays registered for the device's whole life: during boot it
+  // paints the on-screen boot log (bootDisplay devices), and it always feeds
+  // the live session's log shipper so recent lines survive on the server.
+  Log::setSink(&AppController::bootLogTrampoline, this);
   Log::client("Boot", "%s Live Voice Assistant", FIRMWARE_DEVICE);
   Serial.flush();
 
@@ -521,6 +522,17 @@ void AppController::handleInternetReady() {
   _startupChecklistVisible = false;
   _appRegion = AppRegion::Chat;
 
+  // Re-log the boot post-mortem now that the log shipper has a connection:
+  // the original boot-time line can fall out of the ship ring before WiFi
+  // comes up, and this line is the whole point of the server-side log store.
+  if (!_postMortemShipped) {
+    _postMortemShipped = true;
+    Log::client("Boot", "post-mortem: reset reason=%s prev-breadcrumb=%s",
+                _bootResetReason,
+                _lastPowerBreadcrumb.isEmpty() ? "none"
+                                               : _lastPowerBreadcrumb.c_str());
+  }
+
   if (installPendingFirmwareUpdate()) {
     return;
   }
@@ -755,8 +767,11 @@ void AppController::resetBodyPage() { _bodyPageIndex = 0; }
 
 void AppController::bootLogTrampoline(void *ctx, char side, const char *topic,
                                       const char *message) {
-  (void)side;
-  static_cast<AppController *>(ctx)->appendBootLog(topic, message);
+  AppController *self = static_cast<AppController *>(ctx);
+  // Ship every line to the server so post-mortems survive power loss.
+  self->_live.noteLog(side, topic, message);
+  // And paint the on-screen boot log while still in boot mode.
+  self->appendBootLog(topic, message);
 }
 
 void AppController::appendBootLog(const char *topic, const char *message) {
@@ -795,7 +810,8 @@ void AppController::exitBootMode() {
   }
   _bootMode = false;
   _bootLog = "";
-  Log::clearSink();
+  // The sink stays registered: appendBootLog no-ops outside boot mode, and
+  // the log shipper keeps forwarding lines to the server.
   _screenDirty = true;
 }
 

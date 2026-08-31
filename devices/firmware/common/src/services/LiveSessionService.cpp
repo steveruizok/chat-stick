@@ -380,7 +380,80 @@ void LiveSessionService::setPreferredEndpointIndex(int endpointIndex) {
 void LiveSessionService::poll() {
   if (_connected) {
     _ws.poll();
+    flushClientLogs();
   }
+}
+
+/**
+ * @brief Queue one log line for shipping to the server.
+ *
+ * Lines land in the server's device_logs table so post-mortems (battery
+ * readings, breadcrumbs, reset reasons) survive an abrupt device power loss
+ * and can be read back by the model via the read_device_logs tool.
+ */
+void LiveSessionService::noteLog(char side, const char *topic,
+                                 const char *message) {
+  if (_shippingLogs) {
+    return; // Ignore lines emitted while a batch is being sent.
+  }
+  // Per-frame display diagnostics fire many times a second; shipping them
+  // would drown the useful lines and waste bandwidth.
+  if (strcmp(topic, "Render") == 0 || strcmp(topic, "Flush") == 0) {
+    return;
+  }
+  char prefix[20];
+  snprintf(prefix, sizeof(prefix), "%lus %c ",
+           static_cast<unsigned long>(millis() / 1000), side);
+  String line;
+  line.reserve(strlen(prefix) + strlen(topic) + 2 + strlen(message));
+  line += prefix;
+  line += topic;
+  line += ": ";
+  line += message;
+
+  _logShipBuffer[_logShipHead] = line;
+  _logShipHead = (_logShipHead + 1) % kLogShipCapacity;
+  if (_logShipCount < kLogShipCapacity) {
+    _logShipCount++;
+  } else {
+    _logShipDropped++;
+  }
+}
+
+/**
+ * @brief Send a batch of queued log lines to the server (rate-limited).
+ */
+void LiveSessionService::flushClientLogs() {
+  if (_logShipCount == 0) {
+    return;
+  }
+  const unsigned long now = millis();
+  if (now - _lastLogShipMs < kLogShipIntervalMs) {
+    return;
+  }
+  _lastLogShipMs = now;
+  _shippingLogs = true;
+
+  JsonDocument doc;
+  doc["type"] = "client_log";
+  if (_logShipDropped > 0) {
+    doc["dropped"] = _logShipDropped;
+  }
+  JsonArray lines = doc["lines"].to<JsonArray>();
+  const int batch = min(_logShipCount, kLogShipBatchMax);
+  int idx = (_logShipHead - _logShipCount + 2 * kLogShipCapacity) %
+            kLogShipCapacity;
+  for (int i = 0; i < batch; i++) {
+    lines.add(_logShipBuffer[idx]);
+    idx = (idx + 1) % kLogShipCapacity;
+  }
+  String encoded;
+  serializeJson(doc, encoded);
+  if (_ws.send(encoded.c_str())) {
+    _logShipCount -= batch;
+    _logShipDropped = 0;
+  }
+  _shippingLogs = false;
 }
 
 /**

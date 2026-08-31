@@ -213,6 +213,9 @@ private:
   /// NVS namespace holding power diagnostics breadcrumbs.
   Preferences _diagPrefs;
 
+  /// Whether the boot post-mortem line has been re-logged post-connect.
+  bool _postMortemShipped = false;
+
   /// Frame flip interval for the current flipbook animation (from the
   /// server's animation_frame messages).
   int _imageFlipIntervalMs = 500;

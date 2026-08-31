@@ -256,7 +256,8 @@ function buildSystemInstructionText({
 		'- play_sound: play a named device sound effect',
 		'- play_melody: play a short note sequence on the device speaker',
 		'- power_off: shut the device down',
-		'- get_device_status: check battery, volume, brightness, voice, firmware_version, etc.',
+		'- get_device_status: check battery, volume, brightness, voice, firmware_version, last_reset_reason, last_power_breadcrumb, etc.',
+		'- read_device_logs: read recent device logs stored on the server (they survive power loss) — boot/reset reasons, power breadcrumbs, battery heartbeats, errors. Use when the user asks why the device turned off, restarted, or misbehaved: read the evidence, then diagnose.',
 		'- search_docs: search the indexed knowledge base',
 		'- web_fetch: fetch a specific URL and read its text content',
 		'- google_search: search the web for current information (news, facts, recent events)',
@@ -571,7 +572,7 @@ export class LiveSession {
 			// below 100 are inaudible and levels above 230 are uncomfortably loud
 			// for speech, so the firmware clamps nonzero requests into 100-230.
 			const volumeLevelDescription = this.deviceId.startsWith('waveshare')
-				? 'Volume level. 0 mutes. The usable range is 100 (minimum volume, quietest audible) to 230 (max volume, loudest comfortable for speech); nonzero values outside it are clamped. Default is 200. When the user asks for "minimum volume" use 100, "max volume" 230, "medium" about 165.'
+				? 'Volume level. 0 mutes. The usable range is 100 (minimum volume, quietest audible) to 230 (max volume, loudest comfortable for speech); nonzero values outside it are clamped. Default is 200. When the user asks for "minimum volume" use 100, "max volume" 230, "medium" about 165. On battery power the device additionally caps effective output at 170 to protect the power rail (the setting is kept and full loudness returns on USB) — if the user says it sounds quieter unplugged, that is why.'
 				: 'Volume level from 0 (mute) to 255 (maximum)'
 
 			// Send session setup
@@ -776,6 +777,25 @@ export class LiveSession {
 												},
 											},
 											required: ['id'],
+										},
+									},
+									{
+										name: 'read_device_logs',
+										description:
+											"Read recent device log lines stored on the server (they survive the device losing power). Includes boot lines with the last reset reason and a 'prev-breadcrumb' power post-mortem, battery voltage heartbeats, recording/playback events, and errors. Use when the user asks why the device turned off, restarted, crashed, or misbehaved — read the logs and diagnose from the evidence rather than guessing. Lines are returned oldest-first; each is prefixed with server receive time (UTC), and the NNNs inside the line is the device's uptime when it logged.",
+										parameters: {
+											type: 'OBJECT',
+											properties: {
+												limit: {
+													type: 'INTEGER',
+													description: 'How many recent lines to return. Default 100, max 300.',
+												},
+												query: {
+													type: 'STRING',
+													description:
+														"Optional case-insensitive substring filter, e.g. 'breadcrumb', 'reset reason', 'vbat', 'Recording'.",
+												},
+											},
 										},
 									},
 									{
@@ -1268,6 +1288,16 @@ export class LiveSession {
 						this.pendingActivityStartAfterGeminiReady = false
 						this.sendActivityStartToGemini()
 					}
+				}
+
+				// Device log lines — persist so post-mortems survive device power loss.
+				if (msg.type === 'client_log' && Array.isArray(msg.lines)) {
+					this.storeDeviceLogs(
+						msg.lines,
+						typeof msg.dropped === 'number' ? msg.dropped : 0
+					).catch((err) => {
+						console.error('[DeviceLogs] Failed to store:', err)
+					})
 				}
 
 				// Forward tool response to Gemini
@@ -1878,6 +1908,23 @@ export class LiveSession {
 							console.error('[ImageGen] Background animation generation failed:', err)
 						})
 					}
+				} else if (call.name === 'read_device_logs') {
+					const response = await this.handleDeviceLogsTool(
+						(call.args ?? {}) as Record<string, unknown>
+					)
+					const payload = JSON.stringify({
+						toolResponse: {
+							functionResponses: [{ name: call.name, id: call.id, response }],
+						},
+					})
+					if (this.geminiWs) this.geminiWs.send(payload)
+					await this.logToolCall({
+						name: call.name,
+						args: call.args,
+						result: { count: (response as { count?: number }).count ?? 0 },
+						handledBy: 'server',
+						durationMs: Date.now() - startMs,
+					})
 				} else if (
 					call.name === 'list_recent_images' ||
 					call.name === 'search_images' ||
@@ -1951,6 +1998,68 @@ export class LiveSession {
 
 	private sendToDevice(msg: Record<string, unknown>) {
 		this.deviceWs?.send(JSON.stringify(msg))
+	}
+
+	private deviceLogBatchesStored = 0
+
+	/**
+	 * Persist a batch of device log lines to D1, pruning old rows now and then
+	 * so each device keeps roughly its most recent 5000 lines.
+	 */
+	private async storeDeviceLogs(lines: unknown[], dropped: number): Promise<void> {
+		const stmts: D1PreparedStatement[] = []
+		const insert = this.env.DB.prepare(
+			'INSERT INTO device_logs (device_id, line) VALUES (?, ?)'
+		)
+		for (const line of lines.slice(0, 20)) {
+			if (typeof line !== 'string' || !line) continue
+			stmts.push(insert.bind(this.deviceId, line.slice(0, 400)))
+		}
+		if (dropped > 0) {
+			stmts.push(insert.bind(this.deviceId, `[log-ship] ${dropped} lines dropped on device`))
+		}
+		if (stmts.length === 0) return
+		await this.env.DB.batch(stmts)
+
+		if (++this.deviceLogBatchesStored % 100 === 1) {
+			await this.env.DB.prepare(
+				`DELETE FROM device_logs WHERE device_id = ?1 AND id <= (
+				   SELECT id FROM device_logs WHERE device_id = ?1
+				   ORDER BY id DESC LIMIT 1 OFFSET 5000)`
+			)
+				.bind(this.deviceId)
+				.run()
+		}
+	}
+
+	/** Read back recent device log lines for the read_device_logs tool. */
+	private async handleDeviceLogsTool(
+		args: Record<string, unknown>
+	): Promise<Record<string, unknown>> {
+		const rawLimit = Number(args.limit)
+		const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(300, Math.floor(rawLimit))) : 100
+		const query = typeof args.query === 'string' ? args.query.trim() : ''
+		let stmt: D1PreparedStatement
+		if (query) {
+			const like = `%${query.replace(/[\\%_]/g, (c) => '\\' + c)}%`
+			stmt = this.env.DB.prepare(
+				`SELECT line, created_at FROM device_logs
+				 WHERE device_id = ? AND LOWER(line) LIKE LOWER(?) ESCAPE '\\'
+				 ORDER BY id DESC LIMIT ?`
+			).bind(this.deviceId, like, limit)
+		} else {
+			stmt = this.env.DB.prepare(
+				`SELECT line, created_at FROM device_logs
+				 WHERE device_id = ? ORDER BY id DESC LIMIT ?`
+			).bind(this.deviceId, limit)
+		}
+		const rows = await stmt.all<{ line: string; created_at: string }>()
+		const results = rows.results ?? []
+		// Query returns newest-first; present oldest-first so the story reads
+		// top to bottom. created_at is server receive time (UTC); the "NNNs"
+		// prefix inside each line is the device's uptime when it logged.
+		const lines = results.reverse().map((r) => `${r.created_at} | ${r.line}`)
+		return { lines, count: lines.length, ...(query ? { query } : {}) }
 	}
 
 	/**
