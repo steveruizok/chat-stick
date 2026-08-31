@@ -13,11 +13,16 @@ import {
 } from './files'
 import {
 	generateAndProcessImage,
+	generateAnimationStrip,
 	DEFAULT_IMAGE_WIDTH,
 	DEFAULT_IMAGE_HEIGHT,
+	type ImageResult,
+	type ReferenceImage,
 } from './image-gen'
 import {
+	type ImageRecord,
 	type ImageSummary,
+	getAnimationFrames,
 	getImageById,
 	listRecentImages,
 	recordImage,
@@ -242,10 +247,11 @@ function buildSystemInstructionText({
 		'- set_voice: change the voice used for speech output',
 		'- set_thinking_level: change reasoning depth for the current conversation only',
 		'- show_text: display a message on the screen',
-		'- show_image: generate and display an image on the screen (1-bit dithered, ~10s to generate). Use only when the user explicitly asks for a picture, drawing, or image. After calling, give a brief one-line acknowledgement like "Sure, here it comes" or "Coming right up" — do NOT explain how image generation works, what the prompt was, or that it takes a moment. The device shows a pulse animation; the user does not need narration. Past images are saved automatically and can be recalled later.',
-		'- list_recent_images: list the most recently generated images for this device (id + prompt + timestamp). Use when the user asks "what was that picture from earlier?" or wants to revisit a recent visual.',
+		'- show_image: generate and display an image on the screen (1-bit dithered, ~10s to generate). Use only when the user explicitly asks for a picture, drawing, or image. After calling, say nothing — no acknowledgement, no narration, no explanation of how image generation works or that it takes a moment. The device shows a pulse animation; the user does not need narration. Past images are saved automatically and can be recalled later. When the user asks to MODIFY a picture — zoom in, zoom out, rotate it, change the angle, adjust it, add or remove something, restyle it — do not describe the scene from scratch: call show_image with a prompt describing just the change and set reference_image_id (0 = the image on screen right now) so the new image is generated from the previous photo.',
+		'- show_animation: generate and display a short 2–5 frame flipbook animation (frames flip every half second, looping). Use only when the user asks for an animation, a moving picture, or something animated. You write one description per frame: the first describes the full scene, each later one describes ONLY the small change from the previous frame ("wings now down", "the ball has moved to the right edge"). After calling, say nothing — no acknowledgement, no narration; never mention frames, generation, timing, or that it will start or arrive.',
+		'- list_recent_images: list the most recently generated images for this device (id + prompt + timestamp; animations appear once with a frame_count). Use when the user asks "what was that picture from earlier?" or wants to revisit a recent visual.',
 		'- search_images: keyword search across past image prompts. Use when the user references an old image by topic ("the mountain one", "that cat I asked for") and you need to find it.',
-		'- show_saved_image: re-display a previously generated image on the device by id. Use after list_recent_images / search_images when the user wants to see it again — instantly, no regeneration.',
+		'- show_saved_image: re-display a previously generated image on the device by id. Use after list_recent_images / search_images when the user wants to see it again — instantly, no regeneration. If the id belongs to an animation, the whole animation replays.',
 		'- set_timer / list_timers / cancel_timer / extend_timer: manage countdown timers on the device (persist across sessions and reboots; the device beeps when one expires). Each timer has a stable numeric `id`. When the user refers to a timer ambiguously ("the shorter one", "the first one I set", "the eggs timer"), call list_timers, pick the matching entry yourself based on its name / remaining_seconds / created_at_epoch, and pass that `id` to cancel_timer / extend_timer. Do not invent selector keywords or ask the user to disambiguate — reason from the list and act.',
 		'- play_sound: play a named device sound effect',
 		'- play_melody: play a short note sequence on the device speaker',
@@ -293,6 +299,8 @@ export class LiveSession {
 	private static readonly MIN_RECONNECT_MS = 1500
 	private static readonly IDLE_CLOSE_MS = 120_000
 	private static readonly MAX_QUEUED_AUDIO_BYTES = 1_000_000
+	// Flipbook animation frame flip rate on the device (show_animation).
+	private static readonly ANIMATION_FRAME_INTERVAL_MS = 500
 	private state: DurableObjectState
 	private env: Env
 	private deviceWs: WebSocket | null = null
@@ -303,6 +311,17 @@ export class LiveSession {
 	private chatId = ''
 	private imageTargetWidth: number = DEFAULT_IMAGE_WIDTH
 	private imageTargetHeight: number = DEFAULT_IMAGE_HEIGHT
+	// D1 id of the image currently on the device screen (last generated or
+	// re-displayed). Lets the model modify "the picture" without knowing its id:
+	// show_image with reference_image_id 0 resolves to this (falling back to the
+	// device's most recent image in D1 if the DO was restarted).
+	private lastImageId: number | null = null
+
+	// True while an image/animation generation is running for the current model
+	// turn: the model is told to stay quiet after calling the tool, and any
+	// filler it speaks anyway ("Sure, coming right up") is kept off the display
+	// so the image lands alone. Speech and conversation history are unaffected.
+	private suppressTurnDisplayText = false
 	private currentVoice = DEFAULT_VOICE
 	private currentThinkingLevel: ThinkingLevel = DEFAULT_THINKING_LEVEL
 	private currentUserText = ''
@@ -670,17 +689,44 @@ export class LiveSession {
 									{
 										name: 'show_image',
 										description:
-											"Generate and display an image on the device screen as a 1-bit dithered bitmap. Provide a detailed visual description. Use only when the user explicitly asks for a picture, drawing, or visual — examples: 'a cute cartoon cat sitting', 'a simple mountain landscape'. Generation takes ~10 seconds; you can keep talking while it generates and the device shows a pulse animation. The image and any text from this turn are paged together. Past images are saved automatically; use list_recent_images / search_images / show_saved_image to recall them.",
+											"Generate and display an image on the device screen as a 1-bit dithered bitmap. Provide a detailed visual description. Use only when the user explicitly asks for a picture, drawing, or visual — examples: 'a cute cartoon cat sitting', 'a simple mountain landscape'. After calling, say nothing — the device shows a pulse animation while it generates and the image then appears; spoken filler like 'coming right up' is pure noise. Past images are saved automatically; use list_recent_images / search_images / show_saved_image to recall them. To MODIFY an existing image (zoom in, rotate, change the angle, add/remove/restyle something), call this tool with reference_image_id set — the new image is generated using that photo as the starting point, so the subject stays consistent.",
 										parameters: {
 											type: 'OBJECT',
 											properties: {
 												prompt: {
 													type: 'STRING',
 													description:
-														'Visual description for the image. Be specific and concrete — output is monochrome with high contrast.',
+														'Visual description for the image. Be specific and concrete — output is monochrome with high contrast. When reference_image_id is set, describe the CHANGE to make (e.g. "zoom in on the cat\'s face", "rotate the view 90 degrees", "make the sky darker") rather than re-describing the whole scene.',
+												},
+												reference_image_id: {
+													type: 'INTEGER',
+													description:
+														'Optional. Set when the user asks to modify, adjust, or riff on an existing image: the saved image to use as the visual starting point. Pass 0 for the image currently on screen (the most recent one shown), or a specific id from list_recent_images / search_images. Omit entirely for a brand-new image.',
 												},
 											},
 											required: ['prompt'],
+										},
+									},
+									{
+										name: 'show_animation',
+										description:
+											"Generate and display a short flipbook animation on the device screen: 2–5 one-bit dithered frames that flip every half second in a loop. Use only when the user asks for an animation, a moving picture, or something animated — for a still picture use show_image. Provide one description per frame. The FIRST describes the complete scene (same detail as a show_image prompt). Each LATER one describes ONLY the small change from the previous frame — e.g. ['a cartoon bird perched on a branch, wings raised high', 'the wings are now folded down at its sides'] — keep changes small and specific so the frames stay consistent. After calling, say NOTHING — no acknowledgement, no narration: the device shows a pulse animation while it generates and the result replaces it, so any spoken filler is pure noise. Never mention frames, generation, timing, or that the animation will start, arrive, or appear. Frames are saved automatically; show_saved_image on the animation replays it.",
+										parameters: {
+											type: 'OBJECT',
+											properties: {
+												frame_prompts: {
+													type: 'ARRAY',
+													items: { type: 'STRING' },
+													description:
+														'2 to 5 frame descriptions. First = the full scene; each later entry = only the change from the previous frame. Output is monochrome with high contrast, so favor bold silhouettes and clear motion.',
+												},
+												reference_image_id: {
+													type: 'INTEGER',
+													description:
+														'Optional. Set when the user wants to animate an EXISTING image ("make that cat wave"): the saved image to use as the visual starting point for the first frame. Pass 0 for the image currently on screen, or a specific id from list_recent_images / search_images. Omit for a brand-new animation.',
+												},
+											},
+											required: ['frame_prompts'],
 										},
 									},
 									{
@@ -1377,11 +1423,16 @@ export class LiveSession {
 			}
 			if (sc.outputTranscription?.text) {
 				this.currentAssistantText += sc.outputTranscription.text
-				this.sendToDevice({
-					type: 'transcript',
-					source: 'model',
-					text: sc.outputTranscription.text,
-				})
+				if (!this.suppressTurnDisplayText) {
+					this.sendToDevice({
+						type: 'transcript',
+						source: 'model',
+						text: sc.outputTranscription.text,
+					})
+				}
+			}
+			if (sc.interrupted || sc.turnComplete) {
+				this.suppressTurnDisplayText = false
 			}
 
 			// Turn complete — save exchange to D1 after consuming all parts in this event.
@@ -1672,16 +1723,44 @@ export class LiveSession {
 						durationMs: Date.now() - startMs,
 					})
 				} else if (call.name === 'show_image') {
-					const args = call.args as { prompt?: string }
+					const args = call.args as { prompt?: string; reference_image_id?: unknown }
 					const prompt = (args.prompt || '').trim()
+					// Resolve the reference image (for modification requests) before
+					// acking, so a bad id fails fast as a tool error instead of a
+					// silent generation failure after the ack.
+					let reference: ImageSummary | null = null
+					let errorMsg: string | null = null
 					if (!prompt) {
+						errorMsg = 'no prompt provided'
+					} else if (args.reference_image_id !== undefined && args.reference_image_id !== null) {
+						const refId = Number(args.reference_image_id)
+						if (!Number.isFinite(refId)) {
+							errorMsg = `invalid reference_image_id: ${args.reference_image_id}`
+						} else {
+							reference = await this.resolveReferenceImage(refId)
+							if (!reference) {
+								errorMsg =
+									refId > 0
+										? `reference image not found: ${refId}`
+										: 'no previous image to modify; call again without reference_image_id to generate a fresh image'
+							} else if (
+								!this.env.STORAGE ||
+								(!reference.original_key && !reference.dithered_key)
+							) {
+								errorMsg =
+									'reference image has no stored copy; call again without reference_image_id to generate a fresh image'
+								reference = null
+							}
+						}
+					}
+					if (errorMsg) {
 						const payload = JSON.stringify({
 							toolResponse: {
 								functionResponses: [
 									{
 										name: call.name,
 										id: call.id,
-										response: { result: 'no prompt provided' },
+										response: { result: errorMsg },
 									},
 								],
 							},
@@ -1690,7 +1769,7 @@ export class LiveSession {
 						await this.logToolCall({
 							name: call.name,
 							args: call.args,
-							result: 'no prompt',
+							result: errorMsg,
 							handledBy: 'server',
 							status: 'error',
 							durationMs: Date.now() - startMs,
@@ -1713,9 +1792,90 @@ export class LiveSession {
 						if (this.geminiWs) this.geminiWs.send(ackPayload)
 						// Tell the device an image is coming so it can show the pulse animation.
 						this.sendToDevice({ type: 'show_image_pending' })
+						this.suppressTurnDisplayText = true
 						// Run the pipeline in the background and push the result when ready.
-						this.generateAndSendImage(prompt, call.name, call.args, startMs).catch((err) => {
+						this.generateAndSendImage(
+							prompt,
+							call.name,
+							call.args,
+							startMs,
+							reference ?? undefined
+						).catch((err) => {
 							console.error('[ImageGen] Background generation failed:', err)
+						})
+					}
+				} else if (call.name === 'show_animation') {
+					const args = call.args as { frame_prompts?: unknown; reference_image_id?: unknown }
+					const framePrompts = Array.isArray(args.frame_prompts)
+						? args.frame_prompts.map((p) => (typeof p === 'string' ? p.trim() : '')).filter(Boolean)
+						: []
+					let reference: ImageSummary | null = null
+					let errorMsg: string | null = null
+					if (framePrompts.length < 2 || framePrompts.length > 5) {
+						errorMsg = `frame_prompts must contain 2 to 5 non-empty descriptions (got ${framePrompts.length})`
+					} else if (args.reference_image_id !== undefined && args.reference_image_id !== null) {
+						const refId = Number(args.reference_image_id)
+						if (!Number.isFinite(refId)) {
+							errorMsg = `invalid reference_image_id: ${args.reference_image_id}`
+						} else {
+							reference = await this.resolveReferenceImage(refId)
+							if (!reference) {
+								errorMsg =
+									refId > 0
+										? `reference image not found: ${refId}`
+										: 'no previous image to animate; call again without reference_image_id to generate a fresh animation'
+							} else if (
+								!this.env.STORAGE ||
+								(!reference.original_key && !reference.dithered_key)
+							) {
+								errorMsg =
+									'reference image has no stored copy; call again without reference_image_id to generate a fresh animation'
+								reference = null
+							}
+						}
+					}
+					if (errorMsg) {
+						const payload = JSON.stringify({
+							toolResponse: {
+								functionResponses: [
+									{ name: call.name, id: call.id, response: { result: errorMsg } },
+								],
+							},
+						})
+						if (this.geminiWs) this.geminiWs.send(payload)
+						await this.logToolCall({
+							name: call.name,
+							args: call.args,
+							result: errorMsg,
+							handledBy: 'server',
+							status: 'error',
+							durationMs: Date.now() - startMs,
+						})
+					} else {
+						const ackPayload = JSON.stringify({
+							toolResponse: {
+								functionResponses: [
+									{
+										name: call.name,
+										id: call.id,
+										response: {
+											result: 'animation generation started',
+										},
+									},
+								],
+							},
+						})
+						if (this.geminiWs) this.geminiWs.send(ackPayload)
+						this.sendToDevice({ type: 'show_image_pending' })
+						this.suppressTurnDisplayText = true
+						this.generateAndSendAnimation(
+							framePrompts,
+							call.name,
+							call.args,
+							startMs,
+							reference ?? undefined
+						).catch((err) => {
+							console.error('[ImageGen] Background animation generation failed:', err)
 						})
 					}
 				} else if (
@@ -1793,18 +1953,75 @@ export class LiveSession {
 		this.deviceWs?.send(JSON.stringify(msg))
 	}
 
+	/**
+	 * Resolve a reference_image_id from the show_image tool to a stored image.
+	 * Positive ids look up that image directly; 0 (or negative) means "the image
+	 * on screen": the last image this session generated or re-displayed, falling
+	 * back to the device's most recent image in D1 if the DO was restarted.
+	 */
+	private async resolveReferenceImage(id: number): Promise<ImageSummary | null> {
+		if (id > 0) return getImageById(this.env.DB, this.deviceId, id)
+		if (this.lastImageId) return getImageById(this.env.DB, this.deviceId, this.lastImageId)
+		const recent = await listRecentImages(this.env.DB, this.deviceId, 1)
+		return recent[0] ?? null
+	}
+
+	/**
+	 * Load the stored bytes for a reference image from R2 — the full-color
+	 * original when available, else the dithered PNG the device displayed.
+	 */
+	private async fetchReferenceImage(reference: ImageSummary): Promise<ReferenceImage | null> {
+		if (!this.env.STORAGE) return null
+		const key = reference.original_key ?? reference.dithered_key
+		if (!key) return null
+		try {
+			const obj = await this.env.STORAGE.get(key)
+			if (!obj) return null
+			const data = new Uint8Array(await obj.arrayBuffer())
+			const mimeType =
+				obj.httpMetadata?.contentType ?? (key.endsWith('.png') ? 'image/png' : 'image/jpeg')
+			return { data, mimeType }
+		} catch (err) {
+			console.error(`[ImageGen] Failed to fetch reference image ${key}:`, err)
+			return null
+		}
+	}
+
 	private async generateAndSendImage(
 		prompt: string,
 		toolName: string,
 		toolArgs: unknown,
 		startMs: number,
+		reference?: ImageSummary,
 	): Promise<void> {
 		const turnChatId = this.chatId
+		// For modification requests, attach the previous photo so the image model
+		// generates the new image from it. We already acked Gemini, so if the R2
+		// read fails here treat it like any other generation failure rather than
+		// silently generating an unrelated fresh image.
+		let referenceImage: ReferenceImage | undefined
+		if (reference) {
+			const fetched = await this.fetchReferenceImage(reference)
+			if (!fetched) {
+				this.sendToDevice({ type: 'show_image_failed' })
+				await this.logToolCall({
+					name: toolName,
+					args: toolArgs,
+					result: `reference image ${reference.id} could not be loaded`,
+					handledBy: 'server',
+					status: 'error',
+					durationMs: Date.now() - startMs,
+				})
+				return
+			}
+			referenceImage = fetched
+		}
 		const result = await generateAndProcessImage(
 			prompt,
 			this.env.GEMINI_API_KEY,
 			this.imageTargetWidth,
-			this.imageTargetHeight
+			this.imageTargetHeight,
+			referenceImage
 		)
 		if (!result) {
 			this.sendToDevice({ type: 'show_image_failed' })
@@ -1819,6 +2036,49 @@ export class LiveSession {
 			return
 		}
 
+		const { ditheredKey, originalKey, imageId } = await this.persistGeneratedImage(
+			result,
+			prompt,
+			turnChatId
+		)
+
+		if (imageId) this.lastImageId = imageId
+		this.sendToDevice({
+			type: 'show_image',
+			data: result.data,
+			width: result.width,
+			height: result.height,
+			...(ditheredKey ? { key: ditheredKey } : {}),
+			...(imageId ? { image_id: imageId } : {}),
+		})
+
+		await this.logToolCall({
+			name: toolName,
+			args: toolArgs,
+			result: {
+				width: result.width,
+				height: result.height,
+				key: ditheredKey ?? null,
+				original_key: originalKey ?? null,
+				image_id: imageId ?? null,
+			},
+			handledBy: 'server',
+			durationMs: Date.now() - startMs,
+		})
+	}
+
+	/**
+	 * Persist one generated image: dithered PNG + full-color original to R2
+	 * (best-effort) and a row in the D1 `images` table. Animation frames pass
+	 * animationGroup/frameIndex so the frames stay grouped for replay.
+	 */
+	private async persistGeneratedImage(
+		result: ImageResult,
+		prompt: string,
+		turnChatId: string,
+		animationGroup?: string,
+		frameIndex?: number
+	): Promise<{ ditheredKey?: string; originalKey?: string; imageId?: number }> {
 		// Persist the dithered PNG (what the device shows) and the original
 		// full-color model output (for archival / future re-dither) to R2 if
 		// STORAGE is bound. Best-effort; failure here doesn't block sending to
@@ -1866,31 +2126,201 @@ export class LiveSession {
 				packedBits: result.data,
 				width: result.width,
 				height: result.height,
+				animationGroup: animationGroup ?? null,
+				frameIndex: frameIndex ?? null,
 			})
 		} catch (err) {
 			console.error('[ImageGen] Failed to record image in D1:', err)
 		}
 
-		this.sendToDevice({
-			type: 'show_image',
-			data: result.data,
-			width: result.width,
-			height: result.height,
-			...(ditheredKey ? { key: ditheredKey } : {}),
-			...(imageId ? { image_id: imageId } : {}),
-		})
+		return { ditheredKey, originalKey, imageId }
+	}
 
+	/**
+	 * Persist one animation frame and push it to the device: frame 0 as a
+	 * regular show_image (it doubles as the animation's still), later frames as
+	 * animation_frame messages. Returns the frame's D1 image id if recorded.
+	 */
+	private async persistAndSendAnimationFrame(
+		result: ImageResult,
+		prompt: string,
+		turnChatId: string,
+		animationGroup: string,
+		index: number,
+		total: number
+	): Promise<number | undefined> {
+		const { imageId } = await this.persistGeneratedImage(
+			result,
+			prompt,
+			turnChatId,
+			animationGroup,
+			index
+		)
+		if (index === 0) {
+			// The animation's first frame is the canonical image "on screen":
+			// reference_image_id 0 anchors on it.
+			if (imageId) this.lastImageId = imageId
+			this.sendToDevice({
+				type: 'show_image',
+				data: result.data,
+				width: result.width,
+				height: result.height,
+				...(imageId ? { image_id: imageId } : {}),
+			})
+		} else {
+			this.sendToDevice({
+				type: 'animation_frame',
+				index,
+				count: total,
+				interval_ms: LiveSession.ANIMATION_FRAME_INTERVAL_MS,
+				data: result.data,
+				width: result.width,
+				height: result.height,
+			})
+		}
+		return imageId
+	}
+
+	/**
+	 * Generate a 2–5 frame flipbook animation.
+	 *
+	 * Preferred path: ONE model call draws every frame as a grid of equal
+	 * sections in a single image ("contact sheet"), which we slice into frames
+	 * — perfectly consistent style/subject across frames at a single
+	 * generation's latency. If that fails, fall back to chained per-frame
+	 * generation: the first frame from its scene description, each later frame
+	 * from the previous frame's full-color output plus a description of only
+	 * what changes, streamed to the device as they finish.
+	 */
+	private async generateAndSendAnimation(
+		framePrompts: string[],
+		toolName: string,
+		toolArgs: unknown,
+		startMs: number,
+		reference?: ImageSummary
+	): Promise<void> {
+		const turnChatId = this.chatId
+		const animationGroup = crypto.randomUUID()
+		const total = framePrompts.length
+
+		let referenceImage: ReferenceImage | undefined
+		if (reference) {
+			const fetched = await this.fetchReferenceImage(reference)
+			if (!fetched) {
+				this.sendToDevice({ type: 'show_image_failed' })
+				await this.logToolCall({
+					name: toolName,
+					args: toolArgs,
+					result: `reference image ${reference.id} could not be loaded`,
+					handledBy: 'server',
+					status: 'error',
+					durationMs: Date.now() - startMs,
+				})
+				return
+			}
+			referenceImage = fetched
+		}
+
+		const stripResults = await generateAnimationStrip(
+			framePrompts,
+			this.env.GEMINI_API_KEY,
+			this.imageTargetWidth,
+			this.imageTargetHeight,
+			referenceImage
+		)
+		if (stripResults) {
+			const frameIds: number[] = []
+			for (let index = 0; index < stripResults.length; index++) {
+				const imageId = await this.persistAndSendAnimationFrame(
+					stripResults[index],
+					framePrompts[index],
+					turnChatId,
+					animationGroup,
+					index,
+					total
+				)
+				if (imageId) frameIds.push(imageId)
+			}
+			await this.logToolCall({
+				name: toolName,
+				args: toolArgs,
+				result: {
+					animation_group: animationGroup,
+					method: 'strip',
+					frames_sent: stripResults.length,
+					frames_requested: total,
+					frame_ids: frameIds,
+				},
+				handledBy: 'server',
+				durationMs: Date.now() - startMs,
+			})
+			return
+		}
+		console.log('[ImageGen] Strip generation failed; falling back to chained frames')
+
+		const frameIds: number[] = []
+		let framesSent = 0
+		let failure: string | null = null
+		for (let index = 0; index < total; index++) {
+			const result = await generateAndProcessImage(
+				framePrompts[index],
+				this.env.GEMINI_API_KEY,
+				this.imageTargetWidth,
+				this.imageTargetHeight,
+				referenceImage,
+				{ index, total }
+			)
+			if (!result) {
+				failure = `frame ${index + 1}/${total} failed to generate`
+				break
+			}
+
+			const imageId = await this.persistAndSendAnimationFrame(
+				result,
+				framePrompts[index],
+				turnChatId,
+				animationGroup,
+				index,
+				total
+			)
+			if (imageId) frameIds.push(imageId)
+			framesSent++
+
+			// Chain: the next frame edits this frame's full-color output.
+			referenceImage = {
+				data: new Uint8Array(result.originalImage),
+				mimeType: result.originalMimeType,
+			}
+		}
+
+		if (framesSent === 0) {
+			this.sendToDevice({ type: 'show_image_failed' })
+			await this.logToolCall({
+				name: toolName,
+				args: toolArgs,
+				result: failure ?? 'generation failed',
+				handledBy: 'server',
+				status: 'error',
+				durationMs: Date.now() - startMs,
+			})
+			return
+		}
+
+		// Partial success keeps whatever reached the device: one frame is a
+		// still image, two or more still animate.
 		await this.logToolCall({
 			name: toolName,
 			args: toolArgs,
 			result: {
-				width: result.width,
-				height: result.height,
-				key: ditheredKey ?? null,
-				original_key: originalKey ?? null,
-				image_id: imageId ?? null,
+				animation_group: animationGroup,
+				method: 'chained',
+				frames_sent: framesSent,
+				frames_requested: total,
+				frame_ids: frameIds,
+				...(failure ? { partial_failure: failure } : {}),
 			},
 			handledBy: 'server',
+			status: failure ? 'error' : 'ok',
 			durationMs: Date.now() - startMs,
 		})
 	}
@@ -2143,6 +2573,7 @@ export class LiveSession {
 			chat_id: img.chat_id,
 			width: img.width,
 			height: img.height,
+			...(img.animation_group ? { animated: true, frame_count: img.frame_count } : {}),
 		})
 
 		switch (name) {
@@ -2173,20 +2604,47 @@ export class LiveSession {
 				if (!Number.isFinite(id) || id <= 0) return { error: 'id is required' }
 				const image = await getImageById(this.env.DB, this.deviceId, id)
 				if (!image) return { error: `image not found: ${id}` }
+				// An animation frame replays the whole animation, anchored on its
+				// first frame; a plain image re-displays as before.
+				let frames: ImageRecord[] = [image]
+				if (image.animation_group) {
+					const groupFrames = await getAnimationFrames(
+						this.env.DB,
+						this.deviceId,
+						image.animation_group
+					)
+					if (groupFrames.length > 0) frames = groupFrames
+				}
+				const first = frames[0]
+				// This image is now the one on screen, so reference_image_id 0
+				// ("modify the current picture") points at it.
+				this.lastImageId = first.id
 				this.sendToDevice({
 					type: 'show_image',
-					data: image.packed_bits,
-					width: image.width,
-					height: image.height,
-					image_id: image.id,
-					...(image.dithered_key ? { key: image.dithered_key } : {}),
+					data: first.packed_bits,
+					width: first.width,
+					height: first.height,
+					image_id: first.id,
+					...(first.dithered_key ? { key: first.dithered_key } : {}),
 				})
+				for (let i = 1; i < frames.length; i++) {
+					this.sendToDevice({
+						type: 'animation_frame',
+						index: i,
+						count: frames.length,
+						interval_ms: LiveSession.ANIMATION_FRAME_INTERVAL_MS,
+						data: frames[i].packed_bits,
+						width: frames[i].width,
+						height: frames[i].height,
+					})
+				}
 				return {
-					result: 'ok',
-					id: image.id,
-					prompt: image.prompt,
-					width: image.width,
-					height: image.height,
+					result: frames.length > 1 ? `replaying animation (${frames.length} frames)` : 'ok',
+					id: first.id,
+					prompt: first.prompt,
+					width: first.width,
+					height: first.height,
+					...(frames.length > 1 ? { frame_count: frames.length } : {}),
 				}
 			}
 			default:

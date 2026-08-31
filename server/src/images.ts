@@ -10,6 +10,13 @@ export interface ImageSummary {
 	width: number
 	height: number
 	created_at: string
+	// Set on frames of a flipbook animation (see show_animation): frames of one
+	// animation share animation_group and are ordered by frame_index (0-based).
+	animation_group: string | null
+	frame_index: number | null
+	// Total frames in this row's animation group (1 for plain images). Computed
+	// at query time, not stored.
+	frame_count: number
 }
 
 export interface ImageRecord extends ImageSummary {
@@ -24,7 +31,17 @@ export interface ImageSearchHit extends ImageSummary {
 }
 
 const SUMMARY_COLUMNS =
-	'id, chat_id, prompt, dithered_key, original_key, width, height, created_at'
+	'id, chat_id, prompt, dithered_key, original_key, width, height, created_at, animation_group, frame_index'
+
+// Frames in the same animation group, counted per row (1 for plain images).
+const FRAME_COUNT_COLUMN = `CASE WHEN images.animation_group IS NULL THEN 1
+     ELSE (SELECT COUNT(*) FROM images g
+           WHERE g.device_id = images.device_id
+             AND g.animation_group = images.animation_group)
+     END AS frame_count`
+
+// Listing/search should show one entry per animation, anchored on frame 0.
+const FIRST_FRAME_ONLY = '(frame_index IS NULL OR frame_index = 0)'
 
 export async function recordImage(
 	db: D1Database,
@@ -38,13 +55,15 @@ export async function recordImage(
 		packedBits: string
 		width: number
 		height: number
+		animationGroup?: string | null
+		frameIndex?: number | null
 	}
 ): Promise<number> {
 	const result = await db
 		.prepare(
 			`INSERT INTO images
-        (device_id, chat_id, prompt, enhanced_prompt, dithered_key, original_key, packed_bits, width, height, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+        (device_id, chat_id, prompt, enhanced_prompt, dithered_key, original_key, packed_bits, width, height, animation_group, frame_index, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
 		)
 		.bind(
 			params.deviceId,
@@ -55,7 +74,9 @@ export async function recordImage(
 			params.originalKey,
 			params.packedBits,
 			params.width,
-			params.height
+			params.height,
+			params.animationGroup ?? null,
+			params.frameIndex ?? null
 		)
 		.run()
 	const id = (result.meta as { last_row_id?: number } | undefined)?.last_row_id
@@ -70,8 +91,8 @@ export async function listRecentImages(
 	const capped = Math.max(1, Math.min(50, Math.floor(limit)))
 	const rows = await db
 		.prepare(
-			`SELECT ${SUMMARY_COLUMNS} FROM images
-       WHERE device_id = ?
+			`SELECT ${SUMMARY_COLUMNS}, ${FRAME_COUNT_COLUMN} FROM images
+       WHERE device_id = ? AND ${FIRST_FRAME_ONLY}
        ORDER BY created_at DESC, id DESC
        LIMIT ?`
 		)
@@ -95,8 +116,8 @@ export async function searchImages(
 	const like = `%${q.replace(/[\\%_]/g, (c) => '\\' + c)}%`
 	const rows = await db
 		.prepare(
-			`SELECT ${SUMMARY_COLUMNS}, enhanced_prompt FROM images
-       WHERE device_id = ?
+			`SELECT ${SUMMARY_COLUMNS}, ${FRAME_COUNT_COLUMN}, enhanced_prompt FROM images
+       WHERE device_id = ? AND ${FIRST_FRAME_ONLY}
          AND (LOWER(prompt) LIKE LOWER(?) ESCAPE '\\'
               OR LOWER(IFNULL(enhanced_prompt, '')) LIKE LOWER(?) ESCAPE '\\')
        ORDER BY created_at DESC, id DESC
@@ -141,11 +162,29 @@ export async function getImageById(
 ): Promise<ImageRecord | null> {
 	const row = await db
 		.prepare(
-			`SELECT ${SUMMARY_COLUMNS}, enhanced_prompt, packed_bits FROM images
+			`SELECT ${SUMMARY_COLUMNS}, ${FRAME_COUNT_COLUMN}, enhanced_prompt, packed_bits FROM images
        WHERE device_id = ? AND id = ?
        LIMIT 1`
 		)
 		.bind(deviceId, id)
 		.first<ImageRecord>()
 	return row ?? null
+}
+
+// All frames of one animation, in playback order. Includes packed_bits so the
+// caller can re-send every frame to the device without touching R2.
+export async function getAnimationFrames(
+	db: D1Database,
+	deviceId: string,
+	animationGroup: string
+): Promise<ImageRecord[]> {
+	const rows = await db
+		.prepare(
+			`SELECT ${SUMMARY_COLUMNS}, ${FRAME_COUNT_COLUMN}, enhanced_prompt, packed_bits FROM images
+       WHERE device_id = ? AND animation_group = ?
+       ORDER BY frame_index ASC, id ASC`
+		)
+		.bind(deviceId, animationGroup)
+		.all<ImageRecord>()
+	return rows.results ?? []
 }

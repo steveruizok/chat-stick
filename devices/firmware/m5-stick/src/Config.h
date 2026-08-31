@@ -50,6 +50,10 @@ constexpr bool WIFI_USE_FAST_CONNECT_HINTS = true;
 constexpr bool WIFI_SKIP_SAVED_CONFIGURED_DUPLICATES = true;
 constexpr bool WIFI_LOG_CONNECT_DETAILS = true;
 constexpr unsigned long WIFI_CONNECT_POLL_MS = 100;
+// Cap radio TX power in quarter-dBm (44 = 11dBm) to tame battery current
+// spikes; 0 disables the cap. The M5 hasn't shown battery brownouts, so the
+// cap is off here — see the Waveshare Config.h for the tuning notes.
+constexpr int WIFI_MAX_TX_POWER_QDBM = 0;
 
 // ============= Device =============
 constexpr const char *FIRMWARE_DEVICE = "m5-stick";

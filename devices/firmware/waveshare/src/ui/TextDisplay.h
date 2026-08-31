@@ -108,7 +108,28 @@ public:
    */
   bool setImage(const uint8_t *packed, size_t packedLen, int width, int height);
 
-  /// Remove any stored body image.
+  /**
+   * @brief Append one flipbook animation frame after setImage stored frame 0.
+   * @param packed Packed bitmap bytes, MSB first.
+   * @param packedLen Number of bytes in packed.
+   * @param width Bitmap width in pixels (must match the stored image).
+   * @param height Bitmap height in pixels (must match the stored image).
+   * @return True when the frame was stored (fails without a base image or
+   *         when the frame store is full).
+   */
+  bool addAnimationFrame(const uint8_t *packed, size_t packedLen, int width,
+                         int height);
+
+  /// Number of stored frames (1 for a plain image, 2+ while animating).
+  int animationFrameCount() const { return _frameCount; }
+
+  /// Select which stored frame render() draws (clamped to the stored range).
+  void setActiveAnimationFrame(int index);
+
+  /// Index of the frame render() currently draws.
+  int activeAnimationFrame() const { return _activeFrame; }
+
+  /// Remove any stored body image (and all animation frames).
   void clearImage();
 
   /// Write the framebuffer to a stream as hex rows (debug diagnostics).
@@ -118,7 +139,11 @@ public:
   void forceFullRepaint() const { flushFrame(true); }
 
   /// Whether a stored image is currently available for rendering.
-  bool hasImage() const { return _imageBuffer != nullptr; }
+  bool hasImage() const { return _frameCount > 0; }
+
+  /// Maximum stored flipbook animation frames (matches the show_animation
+  /// tool's 5-frame cap; a plain image is one frame).
+  static constexpr int kMaxAnimationFrames = 5;
 
 private:
   /// Footer baseline Y coordinate.
@@ -148,17 +173,24 @@ private:
   /// Background color used by the most recent clearFrame.
   mutable uint16_t _lastClearColor = 0x0000;
 
-  /// Packed 1-bit body image buffer.
-  uint8_t *_imageBuffer = nullptr;
+  /// Packed 1-bit frame buffers: slot 0 is the body image, slots 1+ are
+  /// extra flipbook animation frames.
+  uint8_t *_frames[kMaxAnimationFrames] = {nullptr};
 
-  /// Byte length of the packed body image buffer.
-  size_t _imageBufferSize = 0;
+  /// Number of stored frames.
+  int _frameCount = 0;
 
-  /// Stored image width in pixels.
+  /// Frame index render() draws.
+  int _activeFrame = 0;
+
+  /// Stored image width in pixels (shared by all frames).
   int _imageWidth = 0;
 
-  /// Stored image height in pixels.
+  /// Stored image height in pixels (shared by all frames).
   int _imageHeight = 0;
+
+  /// Allocate one packed frame buffer, preferring PSRAM.
+  uint8_t *allocFrame(size_t bytes) const;
 
   /// Record rows [y0, y1] as drawn for flushFrame's diff-scan hint.
   void markDrawnRows(int y0, int y1) const;
@@ -224,8 +256,8 @@ private:
   /// Draw the menu overlay.
   void drawMenu(const DisplayState &state) const;
 
-  /// Draw the currently stored body image.
-  void drawStoredImage() const;
+  /// Draw the currently stored body image in the given color.
+  void drawStoredImage(uint16_t color) const;
 
   /// Draw the timer alarm screen.
   void drawAlarm(const DisplayState &state) const;

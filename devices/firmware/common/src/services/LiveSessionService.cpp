@@ -858,6 +858,40 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     return;
   }
 
+  if (strcmp(type, "animation_frame") == 0) {
+    const char *data = doc["data"];
+    const int width = doc["width"] | 0;
+    const int height = doc["height"] | 0;
+    const int index = doc["index"] | 0;
+    const int intervalMs = doc["interval_ms"] | 500;
+    if (!data || width <= 0 || height <= 0 || index <= 0) {
+      logServer("Image", "animation_frame missing data or dimensions");
+      return;
+    }
+    const size_t encodedLen = strlen(data);
+    const size_t expectedBytes = (size_t)((width * height + 7) / 8);
+    uint8_t *packed = (uint8_t *)malloc(expectedBytes);
+    if (!packed) {
+      logServer("Image", "failed to allocate animation frame buffer");
+      return;
+    }
+    const int decoded = decodeBase64(data, encodedLen, packed, expectedBytes);
+    if (decoded < 0 || (size_t)decoded < expectedBytes) {
+      logServer("Image", "animation frame decode failed got=%d expected=%u",
+                  decoded, (unsigned)expectedBytes);
+      free(packed);
+      return;
+    }
+    logServer("Image", "animation_frame %d %dx%d bytes=%u interval=%dms",
+                index, width, height, (unsigned)expectedBytes, intervalMs);
+    if (_callbacks.onAnimationFrame) {
+      _callbacks.onAnimationFrame(packed, expectedBytes, width, height, index,
+                                  intervalMs);
+    }
+    free(packed);
+    return;
+  }
+
   if (strcmp(type, "voice_changed") == 0) {
     const char *voice = doc["voice"];
     if (voice && *voice) {

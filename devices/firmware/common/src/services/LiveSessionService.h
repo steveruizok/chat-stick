@@ -48,6 +48,12 @@ struct LiveSessionCallbacks {
   /// Invoked when an image payload should be displayed.
   std::function<void(const uint8_t *, size_t, int, int)> onShowImage;
 
+  /// Additional flipbook animation frame (packed bits, byte length, width,
+  /// height, frame index, flip interval ms). Frame 0 arrives via onShowImage;
+  /// flipping starts once a second frame lands.
+  std::function<void(const uint8_t *, size_t, int, int, int, int)>
+      onAnimationFrame;
+
   /// Invoked while an image request is still in progress.
   std::function<void()> onShowImagePending;
 

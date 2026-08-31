@@ -7,6 +7,18 @@
 #include <string.h>
 #include <time.h>
 
+namespace {
+/**
+ * @brief Cap radio TX power when the device Config asks for it.
+ * Must run after the WiFi driver is started (WiFi.mode / WiFi.begin).
+ */
+void applyTxPowerCap() {
+  if (WIFI_MAX_TX_POWER_QDBM > 0) {
+    WiFi.setTxPower(static_cast<wifi_power_t>(WIFI_MAX_TX_POWER_QDBM));
+  }
+}
+} // namespace
+
 void WiFiService::init() {
   _prefsReady = _prefs.begin(kPrefsNamespace, false);
   if (_prefsReady) {
@@ -158,6 +170,7 @@ bool WiFiService::startCaptivePortal() {
   WiFi.disconnect(true, true);
   delay(100);
   WiFi.mode(WIFI_AP_STA);
+  applyTxPowerCap();
 
   refreshScanResults();
 
@@ -383,6 +396,9 @@ bool WiFiService::connectToNetwork(const String &ssid, const String &password,
   } else {
     WiFi.begin(ssid.c_str(), password.c_str());
   }
+  // Cap TX power for the association burst and everything after — full-power
+  // bursts can brown out the battery rail on small-battery devices.
+  applyTxPowerCap();
 
   while (WiFi.status() != WL_CONNECTED && millis() - startMs < timeoutMs) {
     delay(WIFI_CONNECT_POLL_MS);

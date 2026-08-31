@@ -122,13 +122,21 @@ bool init() {
     pmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
     pmu.clearIrqStatus();
     pmu.setChargeTargetVoltage(3);
+    // Let the system rail sag as far as the PMU allows (2.6V) before it cuts
+    // power. With a higher threshold, a load transient on battery (WiFi burst
+    // + AMOLED + codec) can dip VSYS across it and the AXP2101 shuts the
+    // board down instantly — a clean "device just turned off", no brownout
+    // reset logged.
+    pmu.setSysPowerDownVoltage(2600);
     pmu.enableIRQ(
         XPOWERS_AXP2101_PKEY_POSITIVE_IRQ | XPOWERS_AXP2101_PKEY_NEGATIVE_IRQ |
         XPOWERS_AXP2101_PKEY_SHORT_IRQ | XPOWERS_AXP2101_PKEY_LONG_IRQ);
     enablePmuAdc();
-    Log::client("Board", "AXP2101 online batt=%dmV pct=%d vbus=%dmV",
+    Log::client("Board",
+                "AXP2101 online batt=%dmV pct=%d vbus=%dmV chg=%d vsysmin=%umV",
                 pmu.getBattVoltage(), pmu.getBatteryPercent(),
-                pmu.getVbusVoltage());
+                pmu.getVbusVoltage(), pmu.isCharging() ? 1 : 0,
+                pmu.getSysPowerDownVoltage());
   } else {
     Log::client("Board", "AXP2101 not found");
   }

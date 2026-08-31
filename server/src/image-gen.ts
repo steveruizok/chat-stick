@@ -29,6 +29,18 @@ const IMAGE_GEN_TIMEOUT_MS = 30000
 // is plenty for a 1-bit dithered device display.
 const IMAGE_MODEL = 'gemini-3.1-flash-lite-image'
 
+export interface ReferenceImage {
+	data: Uint8Array // encoded image bytes (PNG or JPEG)
+	mimeType: string
+}
+
+// Set when generating one frame of a flipbook animation (show_animation).
+// index is 0-based; frames after the first are edits of the previous frame.
+export interface FrameContext {
+	index: number
+	total: number
+}
+
 export interface ImageResult {
 	data: string // base64 1-bit packed pixels for device
 	width: number
@@ -47,15 +59,21 @@ export async function generateAndProcessImage(
 	prompt: string,
 	apiKey: string,
 	targetWidth: number = DEFAULT_IMAGE_WIDTH,
-	targetHeight: number = DEFAULT_IMAGE_HEIGHT
+	targetHeight: number = DEFAULT_IMAGE_HEIGHT,
+	referenceImage?: ReferenceImage,
+	frameContext?: FrameContext
 ): Promise<ImageResult | null> {
 	const width = clampDimension(targetWidth, DEFAULT_IMAGE_WIDTH)
 	const height = clampDimension(targetHeight, DEFAULT_IMAGE_HEIGHT)
 	try {
-		console.log(`[ImageGen] Generating ${width}x${height} image for: "${prompt}"`)
-		const enhancedPrompt = buildEnhancedPrompt(prompt)
+		console.log(
+			`[ImageGen] Generating ${width}x${height} image for: "${prompt}"` +
+				(referenceImage ? ' (with reference image)' : '') +
+				(frameContext ? ` (frame ${frameContext.index + 1}/${frameContext.total})` : '')
+		)
+		const enhancedPrompt = buildEnhancedPrompt(prompt, !!referenceImage, frameContext)
 		const aspectRatio = pickImagenAspectRatio(width, height)
-		const generated = await generateImage(enhancedPrompt, apiKey, aspectRatio)
+		const generated = await generateImage(enhancedPrompt, apiKey, aspectRatio, referenceImage)
 		if (!generated) return null
 
 		const imageBuffer = base64ToArrayBuffer(generated.base64)
@@ -65,43 +83,292 @@ export async function generateAndProcessImage(
 			`[ImageGen] Decoded ${generated.mimeType}: ${decoded.width}x${decoded.height}`
 		)
 
-		const resized = resizeImageCover(
+		return finishImageResult(
 			decoded.rgba,
 			decoded.width,
 			decoded.height,
 			width,
-			height
-		)
-
-		const grayscale = toGrayscale(resized, width, height)
-		const dithered = floydSteinbergDither(grayscale, width, height)
-		const packed = packBits(dithered)
-		const base64 = arrayBufferToBase64(packed)
-		console.log(`[ImageGen] Packed to ${packed.length} bytes (${base64.length}b64 chars)`)
-
-		const ditheredRgba = new Uint8Array(width * height * 4)
-		for (let i = 0; i < dithered.length; i++) {
-			const v = dithered[i] ? 255 : 0
-			ditheredRgba[i * 4] = v
-			ditheredRgba[i * 4 + 1] = v
-			ditheredRgba[i * 4 + 2] = v
-			ditheredRgba[i * 4 + 3] = 255
-		}
-		const ditheredPng = UPNG.encode([ditheredRgba.buffer], width, height, 0)
-
-		return {
-			data: base64,
-			width,
 			height,
-			ditheredPng,
-			originalImage: imageBuffer,
-			originalMimeType: generated.mimeType,
 			enhancedPrompt,
-		}
+			imageBuffer,
+			generated.mimeType
+		)
 	} catch (error) {
 		console.error('[ImageGen] Error processing image:', error)
 		return null
 	}
+}
+
+/**
+ * Run source RGBA pixels through the device pipeline (cover-resize, grayscale,
+ * dither, pack) and assemble an ImageResult with the given archival original.
+ */
+function finishImageResult(
+	rgba: Uint8Array,
+	srcW: number,
+	srcH: number,
+	dstW: number,
+	dstH: number,
+	enhancedPrompt: string,
+	originalImage: ArrayBuffer,
+	originalMimeType: string
+): ImageResult {
+	const resized = resizeImageCover(rgba, srcW, srcH, dstW, dstH)
+	const grayscale = toGrayscale(resized, dstW, dstH)
+	const dithered = floydSteinbergDither(grayscale, dstW, dstH)
+	const packed = packBits(dithered)
+	const base64 = arrayBufferToBase64(packed)
+	console.log(`[ImageGen] Packed to ${packed.length} bytes (${base64.length}b64 chars)`)
+
+	const ditheredRgba = new Uint8Array(dstW * dstH * 4)
+	for (let i = 0; i < dithered.length; i++) {
+		const v = dithered[i] ? 255 : 0
+		ditheredRgba[i * 4] = v
+		ditheredRgba[i * 4 + 1] = v
+		ditheredRgba[i * 4 + 2] = v
+		ditheredRgba[i * 4 + 3] = 255
+	}
+	const ditheredPng = UPNG.encode([ditheredRgba.buffer], dstW, dstH, 0)
+
+	return {
+		data: base64,
+		width: dstW,
+		height: dstH,
+		ditheredPng,
+		originalImage,
+		originalMimeType,
+		enhancedPrompt,
+	}
+}
+
+/**
+ * Generate all frames of a flipbook animation in ONE model call: the model
+ * draws a grid of equal-sized sections ("contact sheet") showing successive
+ * instants of the same scene, and we slice the grid into per-frame images.
+ * A single generation keeps subject/style perfectly consistent across frames
+ * and takes one generation's latency instead of one per frame.
+ * Returns one ImageResult per frame prompt, or null on any failure (the
+ * caller can fall back to chained per-frame generation).
+ */
+export async function generateAnimationStrip(
+	framePrompts: string[],
+	apiKey: string,
+	targetWidth: number = DEFAULT_IMAGE_WIDTH,
+	targetHeight: number = DEFAULT_IMAGE_HEIGHT,
+	referenceImage?: ReferenceImage
+): Promise<ImageResult[] | null> {
+	const width = clampDimension(targetWidth, DEFAULT_IMAGE_WIDTH)
+	const height = clampDimension(targetHeight, DEFAULT_IMAGE_HEIGHT)
+	const count = framePrompts.length
+	if (count < 2) return null
+	try {
+		const { rows, cols } = pickStripLayout(width / height, count)
+		const enhancedPrompt = buildStripPrompt(framePrompts, rows, cols, !!referenceImage)
+		// Pick the preset closest to the whole grid's aspect so each section's
+		// aspect lands near the device's, minimizing per-cell cover-cropping.
+		const aspectRatio = pickImagenAspectRatio(width * cols, height * rows)
+		console.log(
+			`[ImageGen] Generating ${rows}x${cols} strip (${count} sections, ${aspectRatio}) for: "${framePrompts[0]}"` +
+				(referenceImage ? ' (with reference image)' : '')
+		)
+		const generated = await generateImage(enhancedPrompt, apiKey, aspectRatio, referenceImage)
+		if (!generated) return null
+
+		const imageBuffer = base64ToArrayBuffer(generated.base64)
+		const decoded = decodeImage(imageBuffer, generated.mimeType)
+		if (!decoded) return null
+		console.log(
+			`[ImageGen] Decoded strip ${generated.mimeType}: ${decoded.width}x${decoded.height}`
+		)
+
+		const regions = locateStripCells(decoded.rgba, decoded.width, decoded.height, rows, cols)
+		const results: ImageResult[] = []
+		for (let i = 0; i < count; i++) {
+			const region = regions[i]
+			if (region.w < 16 || region.h < 16) {
+				console.error(`[ImageGen] Strip cell ${i} too small: ${region.w}x${region.h}`)
+				return null
+			}
+			const cell = extractRegion(
+				decoded.rgba,
+				decoded.width,
+				region.x,
+				region.y,
+				region.w,
+				region.h
+			)
+			// Any leftover magenta fringe (anti-aliased separator edges) would
+			// dither into gray speckle; force it to background black.
+			suppressMagenta(cell)
+			// Archive each frame's full-color cell as its own PNG so per-frame
+			// recall and reference-image edits work exactly like plain images.
+			const cellPng = UPNG.encode([cell.buffer], region.w, region.h, 0)
+			results.push(
+				finishImageResult(cell, region.w, region.h, width, height, enhancedPrompt, cellPng, 'image/png')
+			)
+		}
+		return results
+	} catch (error) {
+		console.error('[ImageGen] Error generating animation strip:', error)
+		return null
+	}
+}
+
+interface CellRegion {
+	x: number
+	y: number
+	w: number
+	h: number
+}
+
+/**
+ * Whether a pixel is (close to) the pure-magenta separator color. The
+ * artwork itself is strictly monochrome (r ≈ g ≈ b), so anything strongly
+ * magenta can only be a grid line — the thresholds just need to survive JPEG
+ * compression around the separators.
+ */
+function isMagentaPixel(r: number, g: number, b: number): boolean {
+	return r > 140 && b > 140 && g < 110 && r - g > 60 && b - g > 60
+}
+
+/** Fraction of magenta pixels per column ('col') or per row ('row'). */
+function magentaFractions(
+	rgba: Uint8Array,
+	imgW: number,
+	imgH: number,
+	axis: 'col' | 'row'
+): number[] {
+	const counts = new Array(axis === 'col' ? imgW : imgH).fill(0)
+	for (let y = 0; y < imgH; y++) {
+		for (let x = 0; x < imgW; x++) {
+			const i = (y * imgW + x) * 4
+			if (isMagentaPixel(rgba[i], rgba[i + 1], rgba[i + 2])) {
+				counts[axis === 'col' ? x : y]++
+			}
+		}
+	}
+	const denom = axis === 'col' ? imgH : imgW
+	return counts.map((c) => c / denom)
+}
+
+/**
+ * Split an axis into content spans delimited by magenta separator lines
+ * (columns/rows that are mostly magenta) and keep the `expected` widest spans
+ * — dropping outer margins and letterbox bars, which sit outside the magenta
+ * grid and are narrower than real cells. Returns null when the axis doesn't
+ * decompose into at least `expected` plausible spans.
+ */
+function findContentSpans(
+	fractions: number[],
+	expected: number,
+	total: number
+): Array<{ start: number; end: number }> | null {
+	const spans: Array<{ start: number; end: number }> = []
+	let start = -1
+	for (let i = 0; i <= total; i++) {
+		const separator = i === total || fractions[i] > 0.5
+		if (!separator && start < 0) start = i
+		if (separator && start >= 0) {
+			spans.push({ start, end: i })
+			start = -1
+		}
+	}
+	if (spans.length < expected) return null
+	spans.sort((a, b) => b.end - b.start - (a.end - a.start))
+	const kept = spans.slice(0, expected).sort((a, b) => a.start - b.start)
+	// Every kept span must look like a real cell, not a sliver.
+	const minSpan = Math.max(16, Math.floor(total / (expected * 4)))
+	if (kept.some((s) => s.end - s.start < minSpan)) return null
+	// Inset a couple of pixels to shave anti-aliased separator fringe.
+	return kept.map((s) => ({ start: s.start + 2, end: s.end - 2 }))
+}
+
+/**
+ * Locate the actual cell rectangles in a generated strip. Preferred: find the
+ * magenta separator lines the prompt asked for and use the content spans
+ * between them (robust to margins, letterboxing, and uneven grids). Fallback:
+ * equal division of the canvas.
+ */
+function locateStripCells(
+	rgba: Uint8Array,
+	imgW: number,
+	imgH: number,
+	rows: number,
+	cols: number
+): CellRegion[] {
+	const colSpans = findContentSpans(magentaFractions(rgba, imgW, imgH, 'col'), cols, imgW)
+	const rowSpans = findContentSpans(magentaFractions(rgba, imgW, imgH, 'row'), rows, imgH)
+	if (colSpans && rowSpans) {
+		console.log('[ImageGen] Strip grid located via magenta separators')
+		const regions: CellRegion[] = []
+		for (const rs of rowSpans) {
+			for (const cs of colSpans) {
+				regions.push({ x: cs.start, y: rs.start, w: cs.end - cs.start, h: rs.end - rs.start })
+			}
+		}
+		return regions
+	}
+
+	console.log('[ImageGen] Magenta grid not detected; slicing into equal cells')
+	const cellW = Math.floor(imgW / cols)
+	const cellH = Math.floor(imgH / rows)
+	const regions: CellRegion[] = []
+	for (let r = 0; r < rows; r++) {
+		for (let c = 0; c < cols; c++) {
+			regions.push({ x: c * cellW, y: r * cellH, w: cellW, h: cellH })
+		}
+	}
+	return regions
+}
+
+/** Replace magenta separator remnants with background black, in place. */
+function suppressMagenta(rgba: Uint8Array): void {
+	for (let i = 0; i < rgba.length; i += 4) {
+		if (isMagentaPixel(rgba[i], rgba[i + 1], rgba[i + 2])) {
+			rgba[i] = 0
+			rgba[i + 1] = 0
+			rgba[i + 2] = 0
+		}
+	}
+}
+
+/** Copy a rectangular RGBA region out of a larger RGBA buffer. */
+function extractRegion(
+	rgba: Uint8Array,
+	srcW: number,
+	x: number,
+	y: number,
+	w: number,
+	h: number
+): Uint8Array<ArrayBuffer> {
+	const out = new Uint8Array(w * h * 4)
+	for (let row = 0; row < h; row++) {
+		const srcStart = ((y + row) * srcW + x) * 4
+		out.set(rgba.subarray(srcStart, srcStart + w * 4), row * w * 4)
+	}
+	return out
+}
+
+/**
+ * Choose a rows x cols grid for `count` animation sections whose overall
+ * aspect ratio (cellAspect * cols / rows) sits closest to one of the image
+ * model's aspect presets — that preset is what the strip is generated at, so
+ * a close match means minimal cover-cropping per section.
+ */
+function pickStripLayout(cellAspect: number, count: number): { rows: number; cols: number } {
+	let best = { rows: 1, cols: count }
+	let bestDelta = Infinity
+	for (let rows = 1; rows <= count; rows++) {
+		if (count % rows !== 0) continue
+		const cols = count / rows
+		const gridAspect = (cellAspect * cols) / rows
+		const delta = closestAspectPreset(gridAspect).delta
+		if (delta < bestDelta) {
+			best = { rows, cols }
+			bestDelta = delta
+		}
+	}
+	return best
 }
 
 function clampDimension(value: number, fallback: number): number {
@@ -112,48 +379,145 @@ function clampDimension(value: number, fallback: number): number {
 	return rounded
 }
 
-/**
- * The image model only accepts a fixed set of aspect ratio presets. Pick the
- * one whose ratio is closest to the requested target so cover-scaling has the
- * least cropping to do.
- */
-function pickImagenAspectRatio(width: number, height: number): string {
-	const presets: Array<{ name: string; ratio: number }> = [
-		{ name: '1:1', ratio: 1 },
-		{ name: '4:3', ratio: 4 / 3 },
-		{ name: '3:4', ratio: 3 / 4 },
-		{ name: '4:5', ratio: 4 / 5 },
-		{ name: '5:4', ratio: 5 / 4 },
-		{ name: '3:2', ratio: 3 / 2 },
-		{ name: '2:3', ratio: 2 / 3 },
-		{ name: '16:9', ratio: 16 / 9 },
-		{ name: '9:16', ratio: 9 / 16 },
-	]
-	const target = width / height
-	let best = presets[0]
+// The image model only accepts a fixed set of aspect ratio presets.
+const ASPECT_PRESETS: Array<{ name: string; ratio: number }> = [
+	{ name: '1:1', ratio: 1 },
+	{ name: '4:3', ratio: 4 / 3 },
+	{ name: '3:4', ratio: 3 / 4 },
+	{ name: '4:5', ratio: 4 / 5 },
+	{ name: '5:4', ratio: 5 / 4 },
+	{ name: '3:2', ratio: 3 / 2 },
+	{ name: '2:3', ratio: 2 / 3 },
+	{ name: '16:9', ratio: 16 / 9 },
+	{ name: '9:16', ratio: 9 / 16 },
+]
+
+/** Find the preset closest (in log-ratio distance) to the given aspect. */
+function closestAspectPreset(target: number): { name: string; delta: number } {
+	let best = ASPECT_PRESETS[0]
 	let bestDelta = Math.abs(Math.log(target / best.ratio))
-	for (const preset of presets.slice(1)) {
+	for (const preset of ASPECT_PRESETS.slice(1)) {
 		const delta = Math.abs(Math.log(target / preset.ratio))
 		if (delta < bestDelta) {
 			best = preset
 			bestDelta = delta
 		}
 	}
-	return best.name
+	return { name: best.name, delta: bestDelta }
 }
 
-function buildEnhancedPrompt(prompt: string): string {
-	// Tuned for monochrome dithered output: bright high-contrast subjects on black.
-	return `${prompt}. Style: white artwork on solid black background, high contrast, simple composition, clear silhouettes, dark mode aesthetic with bright white elements against pure black.`
+/**
+ * Pick the aspect preset closest to the requested target so cover-scaling has
+ * the least cropping to do.
+ */
+function pickImagenAspectRatio(width: number, height: number): string {
+	return closestAspectPreset(width / height).name
+}
+
+// Tuned for monochrome dithered output: bright high-contrast subjects on black.
+const STYLE_SUFFIX =
+	'Style: white artwork on solid black background, high contrast, simple composition, clear silhouettes, dark mode aesthetic with bright white elements against pure black.'
+
+function buildEnhancedPrompt(
+	prompt: string,
+	hasReference: boolean,
+	frameContext?: FrameContext
+): string {
+	const styleSuffix = STYLE_SUFFIX
+	// NOTE: never mention "animation", "flipbook", or "frame" in the prompt —
+	// the image model draws the words literally (a request for "the first frame
+	// of a flipbook animation" produces a picture of a flipbook). The animation
+	// is our concern; the model only ever sees a scene or an edit instruction.
+	if (frameContext && frameContext.index > 0 && hasReference) {
+		// Later animation frame: the reference is the previous frame. Consistency
+		// matters more than creativity — everything must stay identical except
+		// the stated change, or the animation flickers instead of moving.
+		return (
+			`Reproduce the attached image EXACTLY — same subject, same style, same composition, ` +
+			`same camera angle, same line weight, same background — with only this one difference: ` +
+			`${prompt}. The difference should read as one small instant of motion later in the same scene. ` +
+			styleSuffix
+		)
+	}
+	// The first animation frame is deliberately identical to a plain image
+	// request; it falls through to the branches below.
+	if (hasReference) {
+		// Edit mode: the request describes a change to the attached image, not a
+		// scene from scratch. Anchor the model to the reference so "zoom in",
+		// "rotate", "make it darker" etc. keep the same subject and composition.
+		return `Using the attached image as the starting point, make this modification: ${prompt}. Preserve the subject and overall composition of the attached image except where the modification says otherwise. ${styleSuffix}`
+	}
+	return `${prompt}. ${styleSuffix}`
+}
+
+/**
+ * Prompt for a grid of animation sections in one image. Unlike the
+ * buildEnhancedPrompt frame branch, the grid vocabulary here is meant
+ * literally — we want the model to draw the divided layout — so the language
+ * is as exact as possible about section count, size, and position, and
+ * forbids the decorations (borders, gutters, labels) that "contact sheet"
+ * style images usually carry.
+ */
+function buildStripPrompt(
+	framePrompts: string[],
+	rows: number,
+	cols: number,
+	hasReference: boolean
+): string {
+	const layout =
+		rows === 1
+			? `a single row of ${cols} sections side by side`
+			: cols === 1
+				? `a single column of ${rows} sections stacked vertically`
+				: `${rows} rows of ${cols} sections each`
+	const readingOrder =
+		rows === 1
+			? 'left to right'
+			: cols === 1
+				? 'top to bottom'
+				: 'left to right, then top to bottom'
+	const parts: string[] = [
+		`A single image divided into exactly ${framePrompts.length} equal rectangular sections: ${layout}, all EXACTLY the same size, filling the entire canvas edge to edge.`,
+		// Magenta grid lines are a machine-readable sentinel: the artwork is
+		// strictly monochrome, so slicing scans for magenta rows/columns to find
+		// the real section boundaries (and discards letterbox bars outside them).
+		'CRITICAL: the sections are separated from each other and surrounded on the outside by straight, solid, PURE MAGENTA (#FF00FF) dividing lines about 8 pixels thick, forming a precise rectangular grid. Magenta appears ONLY in these dividing lines. Apart from the magenta grid lines there are NO other borders, NO gutters, NO margins, NO numbers, NO labels, and NO text anywhere; each section\'s artwork is strictly black-and-white on a solid black background.',
+		`Read ${readingOrder}, the sections show the SAME scene at successive instants of one motion: identical subject, identical style, identical camera angle, identical composition, identical line weight in every section — only the described motion differs. Keep the subject centered within its own section, well away from the section edges.`,
+	]
+	if (hasReference) {
+		parts.push(
+			'Every section depicts the subject of the attached image, in the style and composition of the attached image.'
+		)
+	}
+	parts.push(`Section 1: ${framePrompts[0]}.`)
+	for (let i = 1; i < framePrompts.length; i++) {
+		parts.push(`Section ${i + 1}: identical to section ${i}, except: ${framePrompts[i]}.`)
+	}
+	parts.push(STYLE_SUFFIX)
+	return parts.join(' ')
 }
 
 async function generateImage(
 	enhancedPrompt: string,
 	apiKey: string,
-	aspectRatio: string
+	aspectRatio: string,
+	referenceImage?: ReferenceImage
 ): Promise<{ base64: string; mimeType: string } | null> {
 	const controller = new AbortController()
 	const timeoutId = setTimeout(() => controller.abort(), IMAGE_GEN_TIMEOUT_MS)
+
+	// For modifications, the reference image goes first so the text reads as an
+	// instruction about the attached image.
+	const requestParts: Array<Record<string, unknown>> = []
+	if (referenceImage) {
+		requestParts.push({
+			inlineData: {
+				mimeType: referenceImage.mimeType,
+				data: arrayBufferToBase64(referenceImage.data),
+			},
+		})
+	}
+	requestParts.push({ text: enhancedPrompt })
 
 	let response: Response
 	try {
@@ -166,7 +530,7 @@ async function generateImage(
 					'x-goog-api-key': apiKey,
 				},
 				body: JSON.stringify({
-					contents: [{ parts: [{ text: enhancedPrompt }] }],
+					contents: [{ parts: requestParts }],
 					generationConfig: {
 						responseModalities: ['IMAGE'],
 						// Cover scaling later crops the long axis as needed; this just
@@ -198,8 +562,8 @@ async function generateImage(
 			content?: { parts?: Array<{ inlineData?: { mimeType?: string; data?: string } }> }
 		}>
 	}
-	const parts = result.candidates?.[0]?.content?.parts ?? []
-	for (const part of parts) {
+	const responseParts = result.candidates?.[0]?.content?.parts ?? []
+	for (const part of responseParts) {
 		if (part.inlineData?.data) {
 			return {
 				base64: part.inlineData.data,

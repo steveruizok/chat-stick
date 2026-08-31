@@ -5,6 +5,7 @@
 #include "hal/Board.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <esp_system.h>
 #include <string.h>
 #include <time.h>
 
@@ -27,6 +28,38 @@ const char *deepSleepWakeReasonName(DeepSleepWakeReason reason) {
     return "other";
   }
 }
+
+/**
+ * @brief Human-readable label for an ESP reset reason.
+ * @param reason Value from esp_reset_reason().
+ * @return Static reset reason name.
+ */
+const char *resetReasonLabel(esp_reset_reason_t reason) {
+  switch (reason) {
+  case ESP_RST_POWERON:
+    return "poweron";
+  case ESP_RST_EXT:
+    return "external";
+  case ESP_RST_SW:
+    return "software";
+  case ESP_RST_PANIC:
+    return "panic";
+  case ESP_RST_INT_WDT:
+    return "int_watchdog";
+  case ESP_RST_TASK_WDT:
+    return "task_watchdog";
+  case ESP_RST_WDT:
+    return "watchdog";
+  case ESP_RST_DEEPSLEEP:
+    return "deepsleep";
+  case ESP_RST_BROWNOUT:
+    return "brownout";
+  case ESP_RST_SDIO:
+    return "sdio";
+  default:
+    return "unknown";
+  }
+}
 } // namespace
 
 void AppController::setup() {
@@ -47,6 +80,17 @@ void AppController::setup() {
   _settings.init();
   _pendingFirmwareUpdateAtBoot = _settings.pendingFirmwareUpdate();
   _timers.init();
+
+  // Power post-mortem: why did the last run end, and what was the device
+  // doing (per the breadcrumb it persisted) right before? A brownout reset
+  // plus a breadcrumb with sagging vbat pinpoints battery-rail collapse.
+  _bootResetReason = resetReasonLabel(esp_reset_reason());
+  if (_diagPrefs.begin("powerdiag", false)) {
+    _lastPowerBreadcrumb = _diagPrefs.getString("last", "");
+  }
+  Log::client("Boot", "reset reason=%s prev-breadcrumb=%s", _bootResetReason,
+              _lastPowerBreadcrumb.isEmpty() ? "none"
+                                             : _lastPowerBreadcrumb.c_str());
 
   const DeepSleepWakeReason wakeReason = Board::deepSleepWakeReason();
   if (wakeReason != DeepSleepWakeReason::None) {
@@ -182,7 +226,22 @@ void AppController::setup() {
     applyPendingTurnReset();
     if (_display.setImage(packed, packedLen, width, height)) {
       _imagePresent = true;
+      _lastImageFlipMs = 0;
       resetBodyPage();
+      _screenDirty = true;
+    }
+  };
+  callbacks.onAnimationFrame = [this](const uint8_t *packed, size_t packedLen,
+                                      int width, int height, int index,
+                                      int intervalMs) {
+    (void)index;
+    // Frames only extend an image that is still on screen; if frame 0 never
+    // landed or was cleared meanwhile, drop the stragglers.
+    if (!_imagePresent) {
+      return;
+    }
+    if (_display.addAnimationFrame(packed, packedLen, width, height)) {
+      _imageFlipIntervalMs = max(100, intervalMs);
       _screenDirty = true;
     }
   };
@@ -402,7 +461,9 @@ void AppController::loop() {
   }
   processRecording();
   processThinkingTimeout();
+  processWaitingIndicator();
   processTextReveal();
+  processImageAnimation();
   processConnectingTimeout();
   processMenuFetches();
   processPower();
@@ -1450,6 +1511,9 @@ void AppController::startRecording() {
   _turn.beginRecording(millis());
   _recordingCommitted = false;
   _preCommitAudioChunkCount = 0;
+  // Breadcrumb at the moment of peak load (mic + WiFi streaming): if the
+  // device dies mid-question this is the post-mortem the next boot reads.
+  recordPowerBreadcrumb("record_start");
   setAppState(AppState::Recording, "Listening...");
   renderIfNeeded();
 }
@@ -1623,6 +1687,9 @@ void AppController::processPlayback() {
       (hasEnoughBuffered || hasCompleteShortReply)) {
     _audio.markPlaybackStarted();
     if (_appState != AppState::Playing) {
+      // Breadcrumb at speaker-amp spin-up — the other candidate for a
+      // battery-rail collapse besides record_start.
+      recordPowerBreadcrumb("play_start");
       setAppState(AppState::Playing, "Speaking...");
     }
   }
@@ -1696,6 +1763,32 @@ void AppController::processTextReveal() {
 void AppController::serviceUi() {
   processTextReveal();
   renderIfNeeded();
+}
+
+void AppController::processImageAnimation() {
+  if (!_imagePresent || _display.animationFrameCount() < 2) {
+    return;
+  }
+  // Flip only while the image page is what the body is actually showing:
+  // chat region (menus cover the body) and page 0 (the image page).
+  if (_appRegion != AppRegion::Chat || _bodyPageIndex != 0) {
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (_lastImageFlipMs == 0) {
+    _lastImageFlipMs = now;
+    return;
+  }
+  if (now - _lastImageFlipMs <
+      static_cast<unsigned long>(_imageFlipIntervalMs)) {
+    return;
+  }
+
+  _lastImageFlipMs = now;
+  _display.setActiveAnimationFrame((_display.activeAnimationFrame() + 1) %
+                                   _display.animationFrameCount());
+  _screenDirty = true;
 }
 
 void AppController::processWaitingIndicator() {
@@ -1914,7 +2007,7 @@ String AppController::buildBodyText() const {
            "response.";
 
   case AppState::Thinking:
-    return "Thinking...";
+    return waitingIndicatorText();
 
   case AppState::Playing:
     return "";
@@ -1954,12 +2047,9 @@ String AppController::buildStartupChecklistText() const {
 }
 
 String AppController::waitingIndicatorText() const {
-  String text = "Waiting";
-  const int dotCount = _waitingIndicatorFrame % 4;
-  for (int i = 0; i < dotCount; i++) {
-    text += '.';
-  }
-  return text;
+  // Terminal-style ASCII spinner.
+  static const char kFrames[] = {'|', '/', '-', '\\'};
+  return String(kFrames[_waitingIndicatorFrame % 4]);
 }
 
 int AppController::currentBodyPageCount() const {
@@ -1988,6 +2078,15 @@ String AppController::currentTimeString() const {
   return String(buf);
 }
 
+void AppController::recordPowerBreadcrumb(const char *event) {
+  char crumb[96];
+  snprintf(crumb, sizeof(crumb), "%s vbat=%umV pct=%d src=%s up=%lus", event,
+           Board::batteryVoltageMv(), Board::batteryLevel(),
+           Board::powerSourceLabel(),
+           static_cast<unsigned long>(millis() / 1000));
+  _diagPrefs.putString("last", crumb);
+}
+
 String AppController::deviceStatusJson() const {
   JsonDocument status;
   status["firmware_version"] = FIRMWARE_VERSION;
@@ -1995,6 +2094,9 @@ String AppController::deviceStatusJson() const {
   status["battery_voltage_mv"] = Board::batteryVoltageMv();
   status["vbus_voltage_mv"] = Board::vbusVoltageMv();
   status["power_source"] = Board::powerSourceLabel();
+  status["last_reset_reason"] = _bootResetReason;
+  status["last_power_breadcrumb"] =
+      _lastPowerBreadcrumb.isEmpty() ? "none" : _lastPowerBreadcrumb.c_str();
   status["volume"] = _audio.volume();
   status["brightness"] = Board::displayBrightness();
   status["voice"] = _settings.voice();

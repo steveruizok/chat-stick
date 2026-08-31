@@ -66,6 +66,11 @@ constexpr bool WIFI_USE_FAST_CONNECT_HINTS = false;
 constexpr bool WIFI_SKIP_SAVED_CONFIGURED_DUPLICATES = false;
 constexpr bool WIFI_LOG_CONNECT_DETAILS = true;
 constexpr unsigned long WIFI_CONNECT_POLL_MS = 250;
+// Cap radio TX power in quarter-dBm (44 = 11dBm, 78 = 19.5dBm full power) to
+// tame battery current spikes; 0 disables the cap. Tried at 44 for the
+// on-battery power-off issue: it did NOT fix it and made streamed audio very
+// choppy (weak link -> retransmits), so it stays off.
+constexpr int WIFI_MAX_TX_POWER_QDBM = 0;
 
 // ============= Panel variant =============
 // The Waveshare ESP32-S3-Touch-AMOLED-1.8 shipped with two different AMOLED

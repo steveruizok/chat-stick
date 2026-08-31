@@ -110,7 +110,9 @@ void TextDisplay::render(const DisplayState &state) {
     const uint16_t bodyColor = state.bodyDim ? COLOR_GRAY : COLOR_WHITE;
 
     if (imagePage && safePageIndex == 0) {
-      drawStoredImage();
+      // The image dims with the same color the body text uses while
+      // recording/thinking.
+      drawStoredImage(bodyColor);
     } else {
       // Streamed text fades in: the newest characters are drawn dim and step up
       // to the body color as more arrive behind them. Ages are counted in
@@ -158,6 +160,17 @@ void TextDisplay::render(const DisplayState &state) {
   flushFrame();
 }
 
+uint8_t *TextDisplay::allocFrame(size_t bytes) const {
+  // Full-panel frames are ~20 KB each and up to five can be stored, so
+  // prefer PSRAM (same as the framebuffers) and fall back to internal RAM.
+  uint8_t *buf = static_cast<uint8_t *>(
+      heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!buf) {
+    buf = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_8BIT));
+  }
+  return buf;
+}
+
 bool TextDisplay::setImage(const uint8_t *packed, size_t packedLen, int width,
                            int height) {
   // Images are stored as 1-bit packed masks and drawn in white on black. The
@@ -177,30 +190,70 @@ bool TextDisplay::setImage(const uint8_t *packed, size_t packedLen, int width,
     return false;
   }
 
-  if (_imageBufferSize < expectedBytes) {
-    if (_imageBuffer) {
-      free(_imageBuffer);
-    }
-    _imageBuffer = static_cast<uint8_t *>(malloc(expectedBytes));
-    if (!_imageBuffer) {
-      _imageBufferSize = 0;
-      Log::client("Display", "failed to allocate image buffer");
-      return false;
-    }
-    _imageBufferSize = expectedBytes;
+  uint8_t *frame = allocFrame(expectedBytes);
+  if (!frame) {
+    Log::client("Display", "failed to allocate image buffer");
+    return false;
   }
-  memcpy(_imageBuffer, packed, expectedBytes);
+  memcpy(frame, packed, expectedBytes);
+  clearImage();
+  _frames[0] = frame;
+  _frameCount = 1;
+  _activeFrame = 0;
   _imageWidth = width;
   _imageHeight = height;
   return true;
 }
 
-void TextDisplay::clearImage() {
-  if (_imageBuffer) {
-    free(_imageBuffer);
-    _imageBuffer = nullptr;
+bool TextDisplay::addAnimationFrame(const uint8_t *packed, size_t packedLen,
+                                    int width, int height) {
+  if (_frameCount == 0) {
+    Log::client("Display", "animation frame rejected: no base image");
+    return false;
   }
-  _imageBufferSize = 0;
+  if (!packed || width != _imageWidth || height != _imageHeight) {
+    Log::client("Display", "animation frame rejected %dx%d expected=%dx%d",
+                width, height, _imageWidth, _imageHeight);
+    return false;
+  }
+  if (_frameCount >= kMaxAnimationFrames) {
+    Log::client("Display", "animation frame rejected: frame store full");
+    return false;
+  }
+  const size_t expectedBytes = static_cast<size_t>((width * height + 7) / 8);
+  if (packedLen < expectedBytes) {
+    Log::client("Display", "animation frame too short bytes=%u expected=%u",
+                static_cast<unsigned>(packedLen),
+                static_cast<unsigned>(expectedBytes));
+    return false;
+  }
+  uint8_t *frame = allocFrame(expectedBytes);
+  if (!frame) {
+    Log::client("Display", "failed to allocate animation frame buffer");
+    return false;
+  }
+  memcpy(frame, packed, expectedBytes);
+  _frames[_frameCount++] = frame;
+  return true;
+}
+
+void TextDisplay::setActiveAnimationFrame(int index) {
+  if (_frameCount == 0) {
+    _activeFrame = 0;
+    return;
+  }
+  _activeFrame = constrain(index, 0, _frameCount - 1);
+}
+
+void TextDisplay::clearImage() {
+  for (int i = 0; i < kMaxAnimationFrames; i++) {
+    if (_frames[i]) {
+      free(_frames[i]);
+      _frames[i] = nullptr;
+    }
+  }
+  _frameCount = 0;
+  _activeFrame = 0;
   _imageWidth = 0;
   _imageHeight = 0;
 }
@@ -507,8 +560,12 @@ int TextDisplay::textPixelWidth(const String &text) const {
   return fitLine(text).length() * kCellW;
 }
 
-void TextDisplay::drawStoredImage() const {
-  if (!_imageBuffer) {
+void TextDisplay::drawStoredImage(uint16_t color) const {
+  if (_frameCount == 0) {
+    return;
+  }
+  const uint8_t *frame = _frames[constrain(_activeFrame, 0, _frameCount - 1)];
+  if (!frame) {
     return;
   }
   // Packed image bits are MSB-first. Only set bits are drawn because the frame
@@ -523,10 +580,10 @@ void TextDisplay::drawStoredImage() const {
     const int rowStart = y * w;
     for (int x = 0; x < w; x++) {
       const int bit = rowStart + x;
-      const uint8_t byte = _imageBuffer[bit >> 3];
+      const uint8_t byte = frame[bit >> 3];
       const bool on = (byte >> (7 - (bit & 7))) & 1;
       if (on) {
-        putPixel(offsetX + x, offsetY + y, COLOR_WHITE);
+        putPixel(offsetX + x, offsetY + y, color);
       }
     }
   }

@@ -14,6 +14,7 @@
 #include "app/TurnController.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <Preferences.h>
 
 /**
  * @brief Top-level firmware coordinator for input, networking, audio, power,
@@ -81,8 +82,8 @@ private:
   /// Rate limit for repeated capture-failure logs.
   static constexpr unsigned long kCaptureFailureLogIntervalMs = 1000;
 
-  /// Refresh cadence for the on-screen wait indicator.
-  static constexpr unsigned long kWaitingIndicatorRefreshMs = 500;
+  /// Refresh cadence for the terminal-style spinner shown while thinking.
+  static constexpr unsigned long kWaitingIndicatorRefreshMs = 120;
 
   /// Cadence for the M5-style tool text reveal animation.
   static constexpr unsigned long kTextRevealFrameMs = 54;
@@ -197,6 +198,24 @@ private:
 
   /// Timestamp of the last animation-throttled display refresh.
   unsigned long _lastAnimationRenderMs = 0;
+
+  /// Timestamp of the last flipbook animation frame flip.
+  unsigned long _lastImageFlipMs = 0;
+
+  /// Readable reset reason for the current boot (esp_reset_reason()).
+  const char *_bootResetReason = "unknown";
+
+  /// Power breadcrumb persisted by the PREVIOUS run (empty when none). The
+  /// last one written before an unexpected power loss shows what the device
+  /// was doing — and what the battery read — right before it died.
+  String _lastPowerBreadcrumb;
+
+  /// NVS namespace holding power diagnostics breadcrumbs.
+  Preferences _diagPrefs;
+
+  /// Frame flip interval for the current flipbook animation (from the
+  /// server's animation_frame messages).
+  int _imageFlipIntervalMs = 500;
 
   /// Current animated wait-indicator frame.
   int _waitingIndicatorFrame = 0;
@@ -482,6 +501,12 @@ private:
 
   /// Advance M5-style tool text reveal animation.
   void processTextReveal();
+
+  /// Flip flipbook animation frames while an animated image is visible.
+  void processImageAnimation();
+
+  /// Persist a power breadcrumb (event + battery reading) to NVS.
+  void recordPowerBreadcrumb(const char *event);
 
   /// Animate the visible indicator while waiting for a response.
   void processWaitingIndicator();
