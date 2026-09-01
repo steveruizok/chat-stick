@@ -177,6 +177,16 @@ public:
   void noteLog(char side, const char *topic, const char *message);
 
   /**
+   * @brief Pause/resume shipping queued log lines to the server.
+   *
+   * The app pauses shipping while audio is in flight: a synchronous TLS send
+   * on the main loop competes with the websocket audio stream and can be
+   * heard as choppy playback. Lines keep queuing (ring overwrites oldest)
+   * and drain once shipping resumes.
+   */
+  void setLogShipPaused(bool paused) { _logShipPaused = paused; }
+
+  /**
    * @brief Reconnect when disconnected and reconnects are allowed.
    * @param enabled Whether reconnect behavior is currently enabled.
    */
@@ -343,6 +353,9 @@ private:
 
   /// Guard so lines logged while shipping don't recurse into the queue.
   bool _shippingLogs = false;
+
+  /// Whether shipping is paused (audio in flight); lines still queue.
+  bool _logShipPaused = false;
 
   /// Send a batch of queued log lines to the server (rate-limited).
   void flushClientLogs();

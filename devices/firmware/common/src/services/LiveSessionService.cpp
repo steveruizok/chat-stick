@@ -424,7 +424,7 @@ void LiveSessionService::noteLog(char side, const char *topic,
  * @brief Send a batch of queued log lines to the server (rate-limited).
  */
 void LiveSessionService::flushClientLogs() {
-  if (_logShipCount == 0) {
+  if (_logShipCount == 0 || _logShipPaused) {
     return;
   }
   const unsigned long now = millis();

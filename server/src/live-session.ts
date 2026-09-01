@@ -572,7 +572,7 @@ export class LiveSession {
 			// below 100 are inaudible and levels above 230 are uncomfortably loud
 			// for speech, so the firmware clamps nonzero requests into 100-230.
 			const volumeLevelDescription = this.deviceId.startsWith('waveshare')
-				? 'Volume level. 0 mutes. The usable range is 100 (minimum volume, quietest audible) to 230 (max volume, loudest comfortable for speech); nonzero values outside it are clamped. Default is 200. When the user asks for "minimum volume" use 100, "max volume" 230, "medium" about 165. On battery power the device additionally caps effective output at 170 to protect the power rail (the setting is kept and full loudness returns on USB) — if the user says it sounds quieter unplugged, that is why.'
+				? 'Volume level. 0 mutes. The usable range is 100 (minimum volume, quietest audible) to 230 (max volume, loudest comfortable for speech); nonzero values outside it are clamped. Default is 165. When the user asks for "minimum volume" use 100, "max volume" 230, "medium" about 165. On battery power the device additionally caps effective output at 170 to protect the power rail (the setting is kept and full loudness returns on USB) — if the user says it sounds quieter unplugged, that is why.'
 				: 'Volume level from 0 (mute) to 255 (maximum)'
 
 			// Send session setup

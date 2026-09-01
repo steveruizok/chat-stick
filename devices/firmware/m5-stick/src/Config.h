@@ -58,7 +58,7 @@ constexpr int WIFI_MAX_TX_POWER_QDBM = 0;
 // ============= Device =============
 constexpr const char *FIRMWARE_DEVICE = "m5-stick";
 constexpr const char *DEVICE_ID = "m5s3-live";
-constexpr int FIRMWARE_VERSION = 15;
+constexpr int FIRMWARE_VERSION = 16;
 
 // ============= Audio =============
 constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)

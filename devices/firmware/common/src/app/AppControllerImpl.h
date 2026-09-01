@@ -443,6 +443,13 @@ void AppController::loop() {
   if (!audioActive) {
     _wifi.poll();
   }
+  // Hold queued log lines while audio is anywhere in flight — a synchronous
+  // TLS send competes with the audio stream on the same socket and is heard
+  // as choppy playback. Same condition set as the render throttle.
+  _live.setLogShipPaused(_audio.playbackStarted() || _audio.speakerBusy() ||
+                         _appState == AppState::Recording ||
+                         _appState == AppState::Thinking ||
+                         _appState == AppState::Playing);
   _live.poll();
   processPlayback();
   if (_appState != AppState::Playing) {
@@ -1788,6 +1795,16 @@ void AppController::processImageAnimation() {
   // Flip only while the image page is what the body is actually showing:
   // chat region (menus cover the body) and page 0 (the image page).
   if (_appRegion != AppRegion::Chat || _bodyPageIndex != 0) {
+    return;
+  }
+  // Freeze the flipbook whenever audio is in flight: a frame flip repaints
+  // the whole panel, and that stall on the main loop starves the websocket
+  // audio pump (choppy playback) or mic capture. Flips resume when the turn
+  // ends.
+  if (_audio.playbackStarted() || _audio.speakerBusy() ||
+      _appState == AppState::Recording || _appState == AppState::Thinking ||
+      _appState == AppState::Playing) {
+    _lastImageFlipMs = 0;
     return;
   }
 
