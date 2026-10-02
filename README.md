@@ -4,13 +4,14 @@ A voice interface for large language models, built on ESP32-S3 devices including
 
 Hold the primary button, talk, release, and hear the model respond. A Cloudflare Worker relays device audio to Google's Gemini Live API and routes tool calls back to the device or to server-side services.
 
-The project is currently configured for `models/gemini-3.1-flash-live-preview`. Image requests use Imagen, then the server converts the generated image into a 1-bit dithered bitmap that fits the device display.
+The project is currently configured for `models/gemini-3.8-live`. Image requests use Imagen, then the server converts the generated image into a 1-bit dithered bitmap that fits the device display.
 
 ## What It Does
 
 - Speech-to-speech chat over WiFi/WebSocket.
+- Background tool calls in both standard and Extended Thinking modes; speech and user input can continue while a tool is pending.
 - Device controls for brightness, volume, voice, speaker output, sounds, melodies, text display, image display, status, and power.
-- Per-conversation reasoning depth (`set_thinking_level`).
+- Per-conversation thinking switch: menu toggle or ask to turn thinking on/off. Off uses Gemini 3.8 Live; low/medium/high uses Gemini 3.8 Live Extended Thinking.
 - Countdown timers and alarms that persist across chat sessions and reboots.
 - Server-side tools for Google Search, URL fetches, docs search, persistent device files, generated image history, and optional email notifications.
 - Conversation history and resume support per device.
@@ -22,6 +23,8 @@ The project is currently configured for `models/gemini-3.1-flash-live-preview`. 
 - **Button B**: hold to open the menu or go back. Click to cycle menu items or page through on-screen text/images.
 - **A + B hold**: factory reset prompt. This clears saved settings and WiFi credentials, then restarts.
 
+Thinking can be toggled in the Home menu (`Thinking: off` / `Thinking: medium`) or by asking “turn thinking on”, “turn thinking off”, or “use high thinking”. Switching briefly reconnects the AI while preserving conversation history. New conversations start with thinking off; resumed conversations restore their saved mode.
+
 ## Architecture
 
 ```text
@@ -29,7 +32,7 @@ ESP32-S3 device ──WebSocket──▶ Cloudflare Worker / Durable Object ─�
   mic/speaker/display          relay, history, tools, OTA                     speech-to-speech AI
 ```
 
-**Firmware** lives in `devices/firmware/`, with one PlatformIO/Arduino project per device. The `m5-stick/` and `waveshare/` targets run the full voice client. `stack-chan/` is currently a hardware bring-up scaffold for the robot's face, touch, motion, LEDs, battery, and speaker; its voice and cloud layers are next.
+**Firmware** lives in `devices/firmware/`, with one PlatformIO/Arduino project per device. The `m5-stick/`, `m5-stopwatch/`, and `waveshare/` targets run the full voice client. `stack-chan/` is currently a hardware bring-up scaffold for the robot's face, touch, motion, LEDs, battery, and speaker; its voice and cloud layers are next.
 
 **Server** (`server/`) is a Cloudflare Worker with a `LiveSession` Durable Object per device. It bridges the device and Gemini Live WebSockets, persists conversation/tool/file/image state in D1, uses Workers AI + Vectorize for docs search, and optionally uses R2 for OTA firmware and image PNG archival.
 
@@ -79,6 +82,7 @@ wrangler d1 migrations apply DB --remote
 
 ```bash
 cd devices/firmware/m5-stick
+# or: cd devices/firmware/m5-stopwatch
 # or: cd devices/firmware/waveshare   (then pio run -e waveshare-v1 or -e waveshare-v2)
 
 cp src/credentials.h.example src/credentials.h
@@ -234,10 +238,10 @@ Convenience scripts:
 
 | Script | What it does |
 | --- | --- |
-| `./flash.sh [m5-stick\|waveshare-v1\|waveshare-v2\|stack-chan] [--monitor]` | Build firmware and upload over USB. |
+| `./flash.sh [m5-stick\|m5-stopwatch\|waveshare-v1\|waveshare-v2\|stack-chan] [--monitor]` | Build firmware and upload over USB. |
 | `./deploy.sh` | Deploy the Cloudflare Worker. |
-| `./publish-ota-release.sh [m5-stick\|waveshare-v1\|waveshare-v2]` | Bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2. |
-| `./publish.sh [m5-stick\|waveshare-v1\|waveshare-v2]` | Publish the OTA binary, then deploy the worker. |
+| `./publish-ota-release.sh [m5-stick\|m5-stopwatch\|waveshare-v1\|waveshare-v2]` | Bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2. |
+| `./publish.sh [m5-stick\|m5-stopwatch\|waveshare-v1\|waveshare-v2]` | Publish the OTA binary, then deploy the worker. |
 
 To cut a firmware release:
 
@@ -258,6 +262,10 @@ All deployment-specific files are gitignored:
 | `devices/firmware/<device>/src/credentials.h` | Server endpoints, device token, WiFi networks. | `devices/firmware/<device>/src/credentials.h.example` |
 
 Never commit credentials or firmware binaries built with credentials embedded.
+
+## M5 StopWatch
+
+Build and flash with `./flash.sh m5-stopwatch`. G2 (yellow) is A: hold to speak, release to send, or click to select. G1 (blue) is B: click to page/cycle, hold for menu/back. The Waveshare font, text reveal, menus, images, and pagination are shared, with content inset to fit the round display. See [StopWatch firmware](devices/firmware/m5-stopwatch/README.md).
 
 ## Hardware
 

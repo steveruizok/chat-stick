@@ -3,7 +3,7 @@
 # Devices on an older version will pick this up on next boot.
 #
 # Releasing a new version:
-#   1. ./publish-ota-release.sh [m5-stick|waveshare-v1|waveshare-v2]
+#   1. ./publish-ota-release.sh [m5-stick|m5-stopwatch|waveshare-v1|waveshare-v2]
 #
 # The two Waveshare panel variants are separate OTA lineages: waveshare-v1
 # publishes under chat-stick/firmware/waveshare/ (the original SH8601 board's
@@ -17,7 +17,7 @@ DEVICE="${FIRMWARE_DEVICE:-m5-stick}"
 BUCKET="m5-stick-assets"
 
 usage() {
-  echo "Usage: $0 [m5-stick|waveshare-v1|waveshare-v2]" >&2
+  echo "Usage: $0 [m5-stick|m5-stopwatch|waveshare-v1|waveshare-v2]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
     --device=*)
       DEVICE="${1#--device=}"
       ;;
-    m5-stick|waveshare-v1|waveshare-v2)
+    m5-stick|m5-stopwatch|waveshare-v1|waveshare-v2)
       DEVICE="$1"
       ;;
     waveshare)

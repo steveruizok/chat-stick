@@ -18,7 +18,7 @@ export interface Env {
 const LEGACY_FIRMWARE_PREFIX = 'chat-stick/firmware/'
 // `waveshare` is the original SH8601-panel board; `waveshare-v2` is the
 // CO5300-panel revision. They share source but need separate binaries.
-const FIRMWARE_DEVICE_IDS = new Set(['m5-stick', 'waveshare', 'waveshare-v2'])
+const FIRMWARE_DEVICE_IDS = new Set(['m5-stick', 'm5-stopwatch', 'waveshare', 'waveshare-v2'])
 
 async function findLatestFirmware(
 	env: Env,

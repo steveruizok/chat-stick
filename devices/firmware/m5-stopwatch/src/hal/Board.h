@@ -6,6 +6,8 @@
 
 namespace Board {
 bool init();
+bool initDisplay();
+void drawDisplayBitmap(int x, int y, uint16_t *pixels, int w, int h);
 void configureSpeaker(m5::speaker_config_t &cfg, bool external, int gain);
 const DeviceCapabilities &capabilities();
 void update();

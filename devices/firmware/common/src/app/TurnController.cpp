@@ -63,7 +63,12 @@ bool TurnController::noteTurnComplete() {
   return true;
 }
 
-void TurnController::noteAudioReceived() { _hasAudio = true; }
+void TurnController::noteAudioReceived() {
+  _hasAudio = true;
+  // New audio may be a background-tool follow-up while the previous utterance
+  // is still draining. Its earlier completion must not finish this response.
+  _complete = false;
+}
 
 void TurnController::clearResponse() {
   _complete = false;

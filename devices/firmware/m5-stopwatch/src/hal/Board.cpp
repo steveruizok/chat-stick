@@ -13,8 +13,8 @@ unsigned long lastPm1PollMs = 0;
 uint8_t currentBrightness = DEFAULT_BRIGHTNESS;
 m5pm1_pwr_src_t currentPowerSource = M5PM1_PWR_SRC_UNKNOWN;
 
-const DeviceCapabilities kCapabilities = {.externalSpeakerSwitch = true,
-                                          .externalSpeakerGain = true,
+const DeviceCapabilities kCapabilities = {.externalSpeakerSwitch = false,
+                                          .externalSpeakerGain = false,
                                           .lightSleep = false,
                                           .batteryLevel = true,
                                           .batteryVoltage = true,
@@ -54,36 +54,27 @@ void configureRtcPullup(gpio_num_t pin) {
 } // namespace
 
 namespace Board {
-void configureSpeaker(m5::speaker_config_t &cfg, bool external, int gain) {
-  if (external) {
-    // HAT SPK2 (MAX98357 I2S) on the StickS3 HAT header.
-    // Header positions map StickC+2's G26/G25/G0 → StickS3's G0/G1/G8.
-    cfg.pin_data_out = GPIO_NUM_1;
-    cfg.pin_bck = GPIO_NUM_0;
-    cfg.pin_ws = GPIO_NUM_8;
-    cfg.pin_mck = I2S_PIN_NO_CHANGE;
-    cfg.i2s_port = I2S_NUM_1;
-    cfg.stereo = false;
-    cfg.use_dac = false;
-    cfg.buzzer = false;
-    cfg.magnification = gain;
-  } else {
-    // StickS3 internal speaker defaults.
-    cfg.pin_data_out = GPIO_NUM_14;
-    cfg.pin_bck = GPIO_NUM_17;
-    cfg.pin_ws = GPIO_NUM_15;
-    cfg.pin_mck = GPIO_NUM_18;
-    cfg.i2s_port = I2S_NUM_0;
-    cfg.stereo = true;
-    cfg.use_dac = false;
-    cfg.buzzer = false;
-  }
+void configureSpeaker(m5::speaker_config_t &, bool, int) {
+  // Preserve M5Unified's StopWatch ES8311 pins, I2S format and gain.
 }
-
+bool initDisplay() { return M5.Display.width() == 466; }
+void drawDisplayBitmap(int x, int y, uint16_t *pixels, int w, int h) {
+  // The shared framebuffer holds native RGB565 words. M5GFX's untyped
+  // uint16_t overload defaults to byte-swapped data: gray 0x7BEF would
+  // become near-white 0xEF7B, hiding the recording/thinking dim state.
+  M5.Display.pushImage(x, y, w, h,
+                      reinterpret_cast<const lgfx::rgb565_t *>(pixels));
+}
 bool init() {
   auto cfg = M5.config();
   cfg.serial_baudrate = 115200;
+  cfg.fallback_board = m5::board_t::board_M5StopWatch;
   M5.begin(cfg);
+  M5.Display.setRotation(0);
+  pinMode(BUTTON_A_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_B_PIN, INPUT_PULLUP);
+  Serial.printf("[Board] StopWatch display=%dx%d PSRAM=%u A=G2 B=G1\n",
+                M5.Display.width(), M5.Display.height(), ESP.getPsramSize());
 
   const m5pm1_err_t pm1BeginRc = pm1.begin(&M5.In_I2C);
   if (pm1BeginRc == M5PM1_OK) {
@@ -140,9 +131,9 @@ void update() {
 
 M5GFX &display() { return M5.Display; }
 
-bool buttonAIsPressed() { return M5.BtnA.isPressed(); }
+bool buttonAIsPressed() { return digitalRead(BUTTON_A_PIN) == LOW; }
 
-bool buttonBIsPressed() { return M5.BtnB.isPressed(); }
+bool buttonBIsPressed() { return digitalRead(BUTTON_B_PIN) == LOW; }
 
 void setDisplayBrightness(uint8_t brightness) {
   currentBrightness = brightness;
@@ -178,8 +169,9 @@ bool usbConnected() {
     return false;
   }
   pm1.getPowerSource(&currentPowerSource);
-  return currentPowerSource == M5PM1_PWR_SRC_5VIN ||
-         currentPowerSource == M5PM1_PWR_SRC_5VINOUT;
+  // Some PM1 revisions report an undocumented source value. The measured
+  // USB input is still valid; use it to keep idle shutdown off while plugged in.
+  return vbusVoltageMv() >= 4000;
 }
 
 const char *powerSourceLabel() {
@@ -187,7 +179,7 @@ const char *powerSourceLabel() {
     return "?";
   }
   pm1.getPowerSource(&currentPowerSource);
-  return sourceLabel(currentPowerSource);
+  return usbConnected() ? "USB" : "BAT";
 }
 
 LightSleepWakeReason enterLightSleep(unsigned long wakeIntervalMs) {

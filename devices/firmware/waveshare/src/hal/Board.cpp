@@ -325,3 +325,10 @@ void powerOff() {
   esp_deep_sleep_start();
 }
 } // namespace Board
+
+namespace Board {
+bool initDisplay() { return display().begin(); }
+void drawDisplayBitmap(int x, int y, uint16_t *pixels, int w, int h) {
+  display().draw16bitRGBBitmap(x, y, pixels, w, h);
+}
+} // namespace Board

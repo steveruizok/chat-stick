@@ -1,0 +1,127 @@
+#pragma once
+
+#include <Arduino.h>
+
+// ============= Server Configuration =============
+// The dev and prod server addresses are per-user and live in credentials.h
+// (gitignored). credentials.h defines: DEVELOPMENT_SERVER_ADDRESS,
+// DEVELOPMENT_SERVER_PORT, PRODUCTION_SERVER_ADDRESS, SERVER_ENDPOINTS[],
+// and SERVER_ENDPOINT_COUNT.
+struct ServerEndpoint {
+  const char *host;
+  int port;
+  const char *ca_cert;
+};
+
+// Google Trust Services root used by the deployed workers.dev endpoint.
+// Source: https://pki.goog/ demo certificate chain for GTS Root R4.
+constexpr const char *GTS_ROOT_R4_CA =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIICCTCCAY6gAwIBAgINAgPlwGjvYxqccpBQUjAKBggqhkjOPQQDAzBHMQswCQYD\n"
+    "VQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEUMBIG\n"
+    "A1UEAxMLR1RTIFJvb3QgUjQwHhcNMTYwNjIyMDAwMDAwWhcNMzYwNjIyMDAwMDAw\n"
+    "WjBHMQswCQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2Vz\n"
+    "IExMQzEUMBIGA1UEAxMLR1RTIFJvb3QgUjQwdjAQBgcqhkjOPQIBBgUrgQQAIgNi\n"
+    "AATzdHOnaItgrkO4NcWBMHtLSZ37wWHO5t5GvWvVYRg1rkDdc/eJkTBa6zzuhXyi\n"
+    "QHY7qca4R9gq55KRanPpsXI5nymfopjTX15YhmUPoYRlBtHci8nHc8iMai/lxKvR\n"
+    "HYqjQjBAMA4GA1UdDwEB/wQEAwIBhjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQW\n"
+    "BBSATNbrdP9JNqPV2Py1PsVq8JQdjDAKBggqhkjOPQQDAwNpADBmAjEA6ED/g94D\n"
+    "9J+uHXqnLrmvT/aDHQ4thQEd0dlq7A/Cr8deVl5c1RxYIigL9zC2L7F8AjEA8GE8\n"
+    "p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD\n"
+    "-----END CERTIFICATE-----\n";
+
+constexpr const char *SERVER_PATH = "/ws";
+
+// ============= WiFi Networks =============
+struct WiFiNetwork {
+  const char *ssid;
+  const char *password;
+  const char *label;
+};
+
+// WiFi credentials are in credentials.h (gitignored).
+// Copy credentials.h.example to credentials.h and fill in your networks.
+// credentials.h defines: WIFI_NETWORKS[] and WIFI_NETWORK_COUNT
+constexpr int WIFI_CONNECT_TIMEOUT_SEC = 10;
+constexpr bool WIFI_DISABLE_PERSISTENT_STORAGE = true;
+constexpr bool WIFI_DISABLE_SLEEP_DURING_CONNECT = true;
+constexpr bool WIFI_SCAN_BEFORE_FALLBACK_CONNECT = true;
+constexpr bool WIFI_USE_FAST_CONNECT_HINTS = true;
+constexpr bool WIFI_SKIP_SAVED_CONFIGURED_DUPLICATES = true;
+constexpr bool WIFI_LOG_CONNECT_DETAILS = true;
+constexpr unsigned long WIFI_CONNECT_POLL_MS = 100;
+// Cap radio TX power in quarter-dBm (44 = 11dBm) to tame battery current
+// spikes; 0 disables the cap. The M5 hasn't shown battery brownouts, so the
+// cap is off here — see the Waveshare Config.h for the tuning notes.
+constexpr int WIFI_MAX_TX_POWER_QDBM = 0;
+
+// ============= Device =============
+constexpr const char *FIRMWARE_DEVICE = "m5-stopwatch";
+constexpr const char *DEVICE_ID = "m5-stopwatch-live";
+constexpr int FIRMWARE_VERSION = 1;
+
+// ============= Audio =============
+constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)
+constexpr int MIC_CHUNK_MS = 100;       // Send a chunk every 100 ms
+constexpr int PLAY_SAMPLE_RATE = 24000; // 24 kHz output (Gemini Live API)
+constexpr int MAX_PLAYBACK_SEC = 30;    // Max response buffer
+
+// ============= Display =============
+constexpr int SCREEN_WIDTH_PX = 466;
+constexpr int SCREEN_HEIGHT_PX = 466;
+
+// Full-panel images are cropped by the circular panel; compose subjects centrally.
+constexpr int IMAGE_TARGET_WIDTH = 466;
+constexpr int IMAGE_TARGET_HEIGHT = 466;
+constexpr int DEFAULT_BRIGHTNESS = 80;  // lower = longer battery; plenty readable indoors
+constexpr int DEFAULT_VOLUME = 165;
+constexpr bool SHOW_BOOT_LOG_ON_DISPLAY = false;
+constexpr bool SHOW_DEBUG_TEXT_ON_DISPLAY = false;
+
+// ============= Hardware (M5 StopWatch) =============
+// Right-handed controls: G2 (yellow) is A, G1 (blue) is B.
+constexpr gpio_num_t BUTTON_A_PIN = GPIO_NUM_2;
+constexpr gpio_num_t BUTTON_B_PIN = GPIO_NUM_1;
+
+// ============= Clock =============
+constexpr const char *NTP_SERVER = "pool.ntp.org";
+constexpr const char *LOCAL_TZ = "PST8PDT,M3.2.0,M11.1.0";
+
+// ============= Timers / Alarms =============
+constexpr int MAX_TIMERS = 4;
+constexpr int TIMER_NAME_MAX_LEN = 24;
+constexpr int TIMER_MIN_DURATION_SEC = 1;
+constexpr int TIMER_MAX_DURATION_SEC = 24 * 60 * 60; // 24 hours
+// `time(nullptr)` below this epoch is treated as "clock not yet synced",
+// so timers can't be created or fired blindly. ~2024-01-01 UTC.
+constexpr time_t TIMER_MIN_VALID_EPOCH = 1704067200;
+
+// ============= Power Management =============
+constexpr int CPU_ACTIVE_MHZ = 240;
+constexpr int CPU_IDLE_MHZ = 80;
+constexpr unsigned long IDLE_DIM_MS = 60 * 1000;
+constexpr unsigned long IDLE_SCREEN_OFF_MS = 2 * 60 * 1000;
+constexpr unsigned long IDLE_POWER_OFF_MS = 5 * 60 * 1000;
+constexpr unsigned long IDLE_LIGHT_SLEEP_MS = IDLE_POWER_OFF_MS;
+constexpr unsigned long LIGHT_SLEEP_WAKE_INTERVAL_MS = 250;
+constexpr bool IDLE_POWER_OFF_WHILE_USB_CONNECTED = false;
+constexpr bool IDLE_DEEP_SLEEP_ENABLED = false;
+constexpr uint32_t IDLE_FULL_POWER_OFF_SEC = 12 * 60 * 60;
+constexpr uint32_t IDLE_DEEP_SLEEP_SHUTDOWN_SEC =
+    IDLE_FULL_POWER_OFF_SEC - (IDLE_POWER_OFF_MS / 1000);
+constexpr int BRIGHTNESS_DIM = 48;
+constexpr int BRIGHTNESS_OFF = 0;
+
+// Centered menu bounds; chat uses the circular layout below.
+constexpr int DISPLAY_INSET_X = 73;
+constexpr int DISPLAY_INSET_Y = 73;
+constexpr int DISPLAY_CHAT_ROWS = 8;
+constexpr int DISPLAY_FOOTER_Y = 413;
+
+// Shared serial framebuffer inspection: D=dump, R=repaint.
+#define FRAMEBUFFER_DEBUG_COMMANDS 1
+
+// Conversation rows follow the circle; menus keep their centered square.
+#define DISPLAY_ROUND_CHAT 1
+constexpr int DISPLAY_CHAT_TOP = (SCREEN_HEIGHT_PX - DISPLAY_CHAT_ROWS * 32) / 2;
+constexpr int DISPLAY_CIRCLE_INSET = 12;

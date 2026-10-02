@@ -201,3 +201,9 @@ constexpr uint32_t IDLE_FULL_POWER_OFF_SEC = 0;
 constexpr uint32_t IDLE_DEEP_SLEEP_SHUTDOWN_SEC = 0;
 constexpr int BRIGHTNESS_DIM = 48;
 constexpr int BRIGHTNESS_OFF = 0;
+
+// Shared AMOLED text layout.
+constexpr int DISPLAY_INSET_X = 16;
+constexpr int DISPLAY_INSET_Y = 32;
+constexpr int DISPLAY_CHAT_ROWS = 11;
+constexpr int DISPLAY_FOOTER_Y = SCREEN_HEIGHT_PX - 32;

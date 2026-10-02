@@ -29,6 +29,7 @@ struct LiveSessionCallbacks {
 
   /// Invoked once the live session is ready for use.
   std::function<void()> onReady;
+  std::function<void()> onThinkingChanged;
 
   /// Invoked when Gemini finishes the current turn.
   std::function<void()> onTurnComplete;
@@ -227,6 +228,8 @@ public:
 
   /// Send a start-of-turn message.
   bool sendStart();
+  bool setThinkingLevel(const String &level);
+  const String &thinkingLevel() const { return _thinkingLevel; }
 
   /// Send an end-of-turn message.
   bool sendStop();
@@ -322,6 +325,7 @@ private:
 
   /// Current selected voice identifier.
   String _voice;
+  String _thinkingLevel = "minimal";
 
   /// Whether the WebSocket is currently connected.
   bool _connected = false;

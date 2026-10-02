@@ -515,6 +515,16 @@ bool LiveSessionService::pingServer() {
  * @brief Send a start-of-turn JSON message to the server.
  * @return True when the message was sent.
  */
+bool LiveSessionService::setThinkingLevel(const String &level) {
+  if (!_connected) return false;
+  JsonDocument doc;
+  doc["type"] = "set_thinking_level";
+  doc["level"] = level;
+  String encoded;
+  serializeJson(doc, encoded);
+  return _ws.send(encoded);
+}
+
 bool LiveSessionService::sendStart() { return _ws.send("{\"type\":\"start\"}"); }
 
 /**
@@ -669,6 +679,12 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
         outInfo.latestVersion = doc["latest_version"] | FIRMWARE_VERSION;
         outInfo.notes = doc["notes"] | "";
         outInfo.downloadUrl = doc["download_url"] | "";
+        if (outInfo.available &&
+            !outInfo.downloadUrl.endsWith(String("/firmware/download?device=") + FIRMWARE_DEVICE)) {
+          logClient("OTA", "Rejected firmware URL for a different device");
+          outInfo = FirmwareUpdateInfo{};
+          return HttpGetDecision::Continue;
+        }
         return HttpGetDecision::Success;
       });
 }
@@ -800,6 +816,17 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     if ((doc["reset"] | false) && _callbacks.onConversationReset) {
       _callbacks.onConversationReset();
     }
+    return;
+  }
+
+  if (strcmp(type, "status") == 0) {
+    if (_callbacks.onStatus) _callbacks.onStatus(doc["message"] | "Connecting...");
+    return;
+  }
+
+  if (strcmp(type, "thinking_changed") == 0) {
+    _thinkingLevel = doc["level"] | "minimal";
+    if (_callbacks.onThinkingChanged) _callbacks.onThinkingChanged();
     return;
   }
 

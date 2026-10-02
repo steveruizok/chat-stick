@@ -165,6 +165,7 @@ void AppController::setup() {
       handleInternetReady();
     }
   };
+  callbacks.onThinkingChanged = [this]() { _screenDirty = true; };
   callbacks.onReady = [this]() {
     exitBootMode();
     if (_appState == AppState::Connecting) {
@@ -291,6 +292,15 @@ void AppController::setup() {
     setAppState(AppState::Ready, "Ready");
   };
   callbacks.onAudio = [this](const uint8_t *data, size_t len) {
+    // A non-blocking tool can produce a follow-up after the previous spoken
+    // utterance has finished and the device has returned to Ready.
+    if (_appState == AppState::Ready) {
+      _audio.resetPlayback();
+      _turn.clearResponse();
+      _turn.beginThinking(millis());
+      _turn.clearPendingReset(); // Keep the transcript of the same request.
+      setAppState(AppState::Thinking, "Replying...");
+    }
     if (_appState != AppState::Recording) {
       clearDebugText();
       _audio.queuePlayback(data, len);
@@ -1051,6 +1061,12 @@ void AppController::selectCurrentMenuItem() {
     case 3:
       openMenu(MenuState::Device);
       return;
+    case 4:
+      if (!_live.setThinkingLevel(_live.thinkingLevel() == "minimal" ? "medium" : "minimal")) {
+        closeMenu();
+        setDebugText("Connect to change thinking");
+      }
+      return;
     default:
       return;
     }
@@ -1117,7 +1133,7 @@ void AppController::selectCurrentMenuItem() {
 int AppController::menuItemCount() const {
   switch (_menuState) {
   case MenuState::Home:
-    return 4;
+    return 5;
   case MenuState::Device:
     return Board::capabilities().externalSpeakerSwitch ? 5 : 4;
   case MenuState::ResumeChat:
@@ -1158,6 +1174,8 @@ String AppController::menuItemLabel(int index) const {
       return "Resume chat";
     case 3:
       return "Device";
+    case 4:
+      return _live.thinkingLevel() == "minimal" ? "Thinking: off" : "Thinking: " + _live.thinkingLevel();
     default:
       return "";
     }
@@ -1717,6 +1735,12 @@ void AppController::processPlayback() {
     }
   }
 
+  // M5 audio is pumped by the UI loop; Waveshare nudges its background
+  // playback task through the same interface.
+  if (_audio.playbackStarted()) {
+    _audio.advancePlayback();
+  }
+
   // Only exit to Ready from Playing — a turnComplete that arrives while we're
   // still Thinking (e.g. a stale signal from a prior, interrupted turn) must
   // not short-circuit waiting for the new response's audio.
@@ -1733,7 +1757,7 @@ void AppController::processThinkingTimeout() {
     return;
   }
 
-  if (_turn.thinkingTimedOut(millis(), kThinkingTimeoutMs)) {
+  if (_turn.thinkingTimedOut(millis(), _live.thinkingLevel() == "minimal" ? kThinkingTimeoutMs : 120000UL)) {
     Log::client("Loop",
                 "thinking timeout chunks=%d failed=%d bytes=%u "
                 "has_audio=%d turn_complete=%d buffered=%d",

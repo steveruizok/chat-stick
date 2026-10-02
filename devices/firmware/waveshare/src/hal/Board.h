@@ -10,6 +10,8 @@
 namespace Board {
 /// Initialize board peripherals.
 bool init();
+bool initDisplay();
+void drawDisplayBitmap(int x, int y, uint16_t *pixels, int w, int h);
 
 /// Static feature flags for this board target.
 const DeviceCapabilities &capabilities();
