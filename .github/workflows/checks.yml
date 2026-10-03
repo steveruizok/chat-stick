@@ -1,0 +1,42 @@
+name: Reliability checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run test:firmware
+
+  sticks3-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install platformio==6.2.0
+      - name: Build with placeholder credentials only
+        working-directory: devices/firmware/m5-stick
+        run: |
+          cp src/credentials.h.example src/credentials.h
+          pio run -e m5stick-s3
+      # Firmware embeds credentials: intentionally do not upload binary artifacts.

@@ -4,7 +4,11 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node scripts/test-live-model.mjs && node scripts/test-firmware-routing.mjs && node scripts/test-route-auth.mjs && node scripts/test-session-regressions.mjs && node scripts/test-web-fetch.mjs",
+    "test:firmware": "node scripts/test-firmware-policy.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit --strict --skipLibCheck --target ES2022 --module ESNext --moduleResolution Bundler --lib ES2022 --types @cloudflare/workers-types scripts/hardware-fixture.ts",
+    "dev:hardware": "wrangler dev --config wrangler.hardware-test.toml --local --ip 0.0.0.0 --port 8787"
   },
   "dependencies": {
     "jpeg-js": "^0.4.4",

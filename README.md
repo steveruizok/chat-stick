@@ -4,7 +4,7 @@ A voice interface for large language models, built on ESP32-S3 devices including
 
 Hold the primary button, talk, release, and hear the model respond. A Cloudflare Worker relays device audio to Google's Gemini Live API and routes tool calls back to the device or to server-side services.
 
-The project is currently configured for `models/gemini-3.8-live`. Image requests use Imagen, then the server converts the generated image into a 1-bit dithered bitmap that fits the device display.
+The project is currently configured for `models/gemini-3.8-live`. Image requests use `gemini-3.1-flash-lite-image` via Gemini's `generateContent` API, then the server converts the generated image into a 1-bit dithered bitmap that fits the device display. Model IDs are configured in `server/src/live-model.ts` and `server/src/image-gen.ts`; availability depends on your API account.
 
 ## What It Does
 
@@ -42,7 +42,7 @@ ESP32-S3 device ──WebSocket──▶ Cloudflare Worker / Durable Object ─�
 - [PlatformIO](https://platformio.org/install) for firmware builds.
 - Node.js 18+ and npm for the server.
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/).
-- Google AI Studio API key with Gemini Live API access. Image generation also requires access to `imagen-4.0-fast-generate-001`.
+- Google AI Studio API key with access to the live and image models configured in the server.
 - Cloudflare account with Workers, Durable Objects, D1, Workers AI, Vectorize, and optionally R2 / Email Routing.
 
 ## Setup
@@ -161,6 +161,20 @@ For local development, add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to `server/.dev.
 - `GET /ws?device_id=...&chat_id=...` — device WebSocket endpoint.
 
 History endpoints require `X-History-Token`, `Authorization: Bearer ...`, or `?token=...`. Admin endpoints use `X-Admin-Token` or fall back to the history token. Device endpoints use `X-Device-Token` or `?device_token=...` when `DEVICE_AUTH_TOKEN` is configured; if no device token is configured, device endpoints are open.
+
+Both OTA check and binary download follow that device-token policy. Set `DEVICE_AUTH_TOKEN` before exposing an OTA server: firmware binaries contain compiled WiFi credentials and must not be published as public artifacts. The shared token assumes one trusted owner; it does not establish separate device identities. Firmware only accepts an OTA URL for its configured server origin and device route, requires a CA for HTTPS, and disables redirects. Plain HTTP OTA is limited to explicitly configured LAN endpoints for local development.
+
+## Validation
+
+```bash
+cd server
+npm ci
+npm test                 # offline server regressions; no cloud/API calls
+npm run typecheck
+npm run test:firmware    # host C++17 compiler, AddressSanitizer + UBSan
+```
+
+The CI workflow also compiles M5StickS3 firmware with placeholder credentials. See [the reliability review](docs/reliability-review.md) for fixed issues, remaining design work and validation limits, and [local hardware testing](docs/hardware-testing.md) for an API-free device test fixture. Fixture tests do not prove Gemini speech recognition or production Cloudflare behavior.
 
 ## Knowledge Base
 
