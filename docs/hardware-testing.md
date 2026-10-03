@@ -75,6 +75,7 @@ Candidate firmware: release build, flash write and written-data hash verificatio
 | Connection recovery | Fixture closed the socket; device reconnected and answered another status request |
 | Timer expiry | A 15-second timer appeared in `list_timers`, expired in the serial log and was absent in the next response |
 | Dim, screen off, timed deep sleep | Serial log recorded `Active -> Dimmed -> ScreenOff -> PowerOff`, deep sleep, `reset reason=deepsleep`, `wake ... cause=timer` and the saved timer expiring after boot |
+| Network recovery after timed wake | Operator dismissed the alarm with Button A; a fresh status request then returned `last_reset_reason: deepsleep`, zero active timers and the normal 60/120/300/300-second power thresholds |
 
 The timed-wake test was performed with USB connected, using shortened timeouts and
 a 45-second saved timer. The device entered its alarm screen after wake; automatic
