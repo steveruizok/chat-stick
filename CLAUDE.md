@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A handheld voice assistant built on ESP32-S3 devices: M5StickS3 and Waveshare ESP32-S3 Touch AMOLED 1.8. Hold a button, talk, release to hear the AI respond. Audio streams over WiFi/WebSocket to a Cloudflare Worker, which relays it to Google's Gemini 3.1 Live API for speech-to-speech AI.
+A handheld voice assistant built on ESP32-S3 devices: M5StickS3 and Waveshare ESP32-S3 Touch AMOLED 1.8. Hold a button, talk, release to hear the AI respond. Audio streams over WiFi/WebSocket to a Cloudflare Worker, which relays it to Google's Gemini Live API for speech-to-speech AI. Model IDs are configured in `server/src/live-model.ts`.
 
 ```
 ESP32-S3 device ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebSocket──▶ Gemini Live API
@@ -58,7 +58,7 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 - **Tool call routing**:
   - Server-side tools (handled in `live-session.ts`): `search_docs`, `web_fetch`, `new_conversation`, `new_chat`; file-CRUD `list_files`, `read_file`, `write_file`, `append_to_file`, `search_files`; image tools `show_image`, `show_animation`, `list_recent_images`, `search_images`, `show_saved_image`; and `email_me` when email is configured
   - Device-side tools (forwarded as JSON over the device WebSocket; response relayed back to Gemini): `set_brightness`, `set_volume`, `set_speaker`, `set_external_speaker_gain`, `set_voice`, `show_text`, `play_sound`, `play_melody`, `power_off`, `get_device_status`, and timer tools `set_timer`, `list_timers`, `cancel_timer`, `extend_timer`
-- **Image generation** (`server/src/image-gen.ts`, `server/src/images.ts`) — `show_image` calls Google Imagen, dithers to a 232×112 1-bit bitmap (chat text area, rows 1–7 of the 240×135 LCD — see `designs.md`), sends packed bits to the device, and stores both the dithered + original PNGs in R2 plus a record in the D1 `images` table. `list_recent_images` / `search_images` / `show_saved_image` recall by id without regeneration. While generation runs, the server sends `show_image_pending` / `show_image_failed` frames so the device can show a pulse animation. `show_animation` generates a 2–5 frame flipbook: preferred path is ONE model call drawing all frames as a grid of equal sections in a single image, sliced server-side (consistent + fast); fallback is chained per-frame generation using the previous frame as reference. Frames go to the device as `show_image` (frame 0) then `animation_frame` messages and the device flips them every 500ms. Frames share an `animation_group` in the D1 `images` table so `show_saved_image` replays the whole animation
+- **Image generation** (`server/src/image-gen.ts`, `server/src/images.ts`) — `show_image` calls the Gemini image model configured in `image-gen.ts` via `generateContent`, dithers to a 232×112 1-bit bitmap (chat text area, rows 1–7 of the 240×135 LCD — see `designs.md`), sends packed bits to the device, and stores both the dithered + original PNGs in R2 plus a record in the D1 `images` table. `list_recent_images` / `search_images` / `show_saved_image` recall by id without regeneration. While generation runs, the server sends `show_image_pending` / `show_image_failed` frames so the device can show a pulse animation. `show_animation` generates a 2–5 frame flipbook: preferred path is ONE model call drawing all frames as a grid of equal sections in a single image, sliced server-side (consistent + fast); fallback is chained per-frame generation using the previous frame as reference. Frames go to the device as `show_image` (frame 0) then `animation_frame` messages and the device flips them every 500ms. Frames share an `animation_group` in the D1 `images` table so `show_saved_image` replays the whole animation
 - **Optional email** (`server/src/email.ts`) — `email_me` tool is only declared to Gemini when the `[[send_email]]` binding plus `EMAIL_SENDER`/`EMAIL_RECIPIENT` secrets are all present. Cloudflare Email Routing requires the recipient to be pre-verified, so this is for self-notifications only. See README "Optional: Email Notifications"
 - **Docs search** (`server/src/docs-search.ts`) — keyword search (in-memory JSON index) with vector search fallback (Cloudflare Vectorize + Workers AI embeddings)
 - **Device files** (`server/src/files.ts`) — device-scoped notes/files in D1, every query filtered by `device_id`. `MAX_FILE_BYTES = 100_000`. Append uses SQL concat for atomicity (no read-then-write)
@@ -66,7 +66,7 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 
 ### Firmware
 
-- **Device projects** live under `devices/firmware/<device>/`; shared behavior is intentionally mirrored between the M5 and Waveshare firmware where hardware allows.
+- **Device projects** live under `devices/firmware/<device>/`; shared application and service code lives in `devices/firmware/common/`, with device-specific hardware and display implementations.
 - **`main.cpp`** — thin shell delegating to `AppController`
 - **`AppController`** (`app/`) — central coordinator. Owns all services, manages state machine (`AppState`: Connecting → Ready → Recording → Thinking → Playing), handles button input, menu navigation, and display updates
 - **Services** (`services/`):

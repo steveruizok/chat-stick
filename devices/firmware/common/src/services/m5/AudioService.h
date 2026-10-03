@@ -61,6 +61,7 @@ private:
   bool _playbackStarted = false;
   bool _chunkInFlight = false;
   bool _useExternalSpeaker = false;
+  bool _recording = false;
   int _externalSpeakerGain = 24;
   int _volume = DEFAULT_VOLUME;
   int _lastCaptureAverageAbs = 0;

@@ -1,0 +1,16 @@
+# Local hardware testing only. Never deploy this fixture.
+name = "chat-stick-hardware-test"
+main = "scripts/hardware-fixture.ts"
+compatibility_date = "2025-01-01"
+
+[[durable_objects.bindings]]
+name = "FIXTURE"
+class_name = "HardwareFixture"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HardwareFixture"]
+
+[vars]
+# Public test marker, not a production secret. Use only on a trusted test LAN.
+DEVICE_AUTH_TOKEN = "local-hardware-test"

@@ -303,7 +303,14 @@ void AppController::setup() {
     }
     if (_appState != AppState::Recording) {
       clearDebugText();
-      _audio.queuePlayback(data, len);
+      if (_appState == AppState::Error) return;
+      if (!_audio.queuePlayback(data, len)) {
+        _audio.stopPlayback();
+        _turn.clearResponse();
+        setErrorState(ErrorCategory::ServerRefused, "Audio interrupted",
+                      "Reply audio exceeded the playback buffer. Try again.");
+        return;
+      }
       _turn.noteAudioReceived();
     }
     // Audio frames arrive back-to-back inside a single websocket poll, so the

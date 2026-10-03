@@ -1,4 +1,5 @@
 #include "TextDisplay.h"
+#include "util/DisplayGlyphs.h"
 
 #include "../Config.h"
 #include <M5Unified.h>
@@ -299,20 +300,12 @@ int TextDisplay::wrappedRowCount(const String &text) const {
 }
 
 String TextDisplay::fitLine(const String &text) const {
+  const auto cells = DisplayGlyphs::cells(text.c_str(), text.length());
   String out;
   out.reserve(kCharsPerLine);
-
-  for (int i = 0; i < static_cast<int>(text.length()) && out.length() < kCharsPerLine;
-       i++) {
-    const char c = text[i];
-    if ((c >= 32 && c <= 126) || c == kGlyphTriangleDown ||
-        c == kGlyphBulletFilled || c == kGlyphBulletHollow) {
-      out += c;
-    } else {
-      out += ' ';
-    }
+  for (size_t i = 0; i < cells.size() && i < kCharsPerLine; ++i) {
+    out += cells[i] == '\n' ? ' ' : cells[i];
   }
-
   return out;
 }
 
@@ -342,6 +335,8 @@ String TextDisplay::spaces(int count) const {
 }
 
 int TextDisplay::wrapBodyText(const String &text, String out[], int maxRows) const {
+  const auto decoded = DisplayGlyphs::cells(text.c_str(), text.length());
+  const String cellText(decoded.c_str());
   for (int i = 0; i < maxRows; i++) {
     out[i] = "";
   }
@@ -402,8 +397,8 @@ int TextDisplay::wrapBodyText(const String &text, String out[], int maxRows) con
     line = "";
   };
 
-  for (int i = 0; i <= static_cast<int>(text.length()) && row < maxRows; i++) {
-    const char c = i < static_cast<int>(text.length()) ? text[i] : '\n';
+  for (int i = 0; i <= static_cast<int>(cellText.length()) && row < maxRows; i++) {
+    const char c = i < static_cast<int>(cellText.length()) ? cellText[i] : '\n';
     if (c == '\n') {
       appendWord(word);
       word = "";
@@ -418,7 +413,8 @@ int TextDisplay::wrapBodyText(const String &text, String out[], int maxRows) con
     }
 
     if ((c >= 32 && c <= 126) || c == kGlyphTriangleDown ||
-        c == kGlyphBulletFilled || c == kGlyphBulletHollow) {
+        c == kGlyphBulletFilled || c == kGlyphBulletHollow ||
+        DisplayGlyphs::isTurkish(static_cast<uint8_t>(c))) {
       word += c;
     }
   }
@@ -533,41 +529,49 @@ void TextDisplay::drawLine(int row, const String &text, uint16_t color) const {
   }
 }
 
-void TextDisplay::drawCharCell(int x, int yTop, char c, uint16_t color) const {
+void TextDisplay::drawCharCell(int x, int yTop, char c, uint16_t color, int scale) const {
+  if (DisplayGlyphs::isTurkish(static_cast<uint8_t>(c))) {
+    drawBitmapGlyph(x, yTop, DisplayGlyphs::TurkishBits[static_cast<uint8_t>(c) - 0x10], color, scale);
+    return;
+  }
   if (c == kGlyphTriangleDown) {
-    drawBitmapGlyph(x, yTop, kGlyphTriangleDownBits, color);
+    drawBitmapGlyph(x, yTop, kGlyphTriangleDownBits, color, scale);
     return;
   }
   if (c == kGlyphBulletFilled) {
-    drawBitmapGlyph(x, yTop, kGlyphBulletFilledBits, color);
+    drawBitmapGlyph(x, yTop, kGlyphBulletFilledBits, color, scale);
     return;
   }
   if (c == kGlyphBulletHollow) {
-    drawBitmapGlyph(x, yTop, kGlyphBulletHollowBits, color);
+    drawBitmapGlyph(x, yTop, kGlyphBulletHollowBits, color, scale);
     return;
   }
   if (_canvasReady) {
     _canvas.setTextColor(color);
     _canvas.setCursor(x, yTop);
+    _canvas.setTextSize(scale);
     _canvas.print(c);
+    _canvas.setTextSize(1);
     return;
   }
   M5.Display.setTextColor(color);
   M5.Display.setCursor(x, yTop);
+  M5.Display.setTextSize(scale);
   M5.Display.print(c);
+  M5.Display.setTextSize(1);
 }
 
 void TextDisplay::drawBitmapGlyph(int x, int yTop, const uint8_t *bits,
-                                  uint16_t color) const {
+                                  uint16_t color, int scale) const {
   for (int row = 0; row < LINE_HEIGHT; row++) {
     const uint8_t byte = bits[row];
     if (byte == 0) continue;
     for (int col = 0; col < 8; col++) {
       if (!((byte >> (7 - col)) & 1)) continue;
       if (_canvasReady) {
-        _canvas.drawPixel(x + col, yTop + row, color);
+        _canvas.fillRect(x + col * scale, yTop + row * scale, scale, scale, color);
       } else {
-        M5.Display.drawPixel(x + col, yTop + row, color);
+        M5.Display.fillRect(x + col * scale, yTop + row * scale, scale, scale, color);
       }
     }
   }
@@ -647,32 +651,16 @@ void TextDisplay::drawAlarm(const DisplayState &state) const {
 
   const int titleX = rowX + kBellW + gap;
   const int titleY = rowTopY;
-  if (_canvasReady) {
-    _canvas.setTextColor(COLOR_WHITE);
-    _canvas.setTextSize(2);
-    _canvas.setCursor(titleX, titleY);
-    _canvas.print(safeTitle);
-    _canvas.setTextSize(1);
-  } else {
-    M5.Display.setTextColor(COLOR_WHITE);
-    M5.Display.setTextSize(2);
-    M5.Display.setCursor(titleX, titleY);
-    M5.Display.print(safeTitle);
-    M5.Display.setTextSize(1);
+  for (size_t i = 0; i < safeTitle.length(); ++i) {
+    drawCharCell(titleX + i * 16, titleY, safeTitle[i], COLOR_WHITE, 2);
   }
 
   if (hasDetail) {
     const String safeDetail = fitLine(state.alarmDetail);
     const int detailX =
         max(0, (SCREEN_WIDTH_PX - static_cast<int>(safeDetail.length()) * 8) / 2);
-    if (_canvasReady) {
-      _canvas.setTextColor(COLOR_GRAY);
-      _canvas.setCursor(detailX, 76);
-      _canvas.print(safeDetail);
-    } else {
-      M5.Display.setTextColor(COLOR_GRAY);
-      M5.Display.setCursor(detailX, 76);
-      M5.Display.print(safeDetail);
+    for (size_t i = 0; i < safeDetail.length(); ++i) {
+      drawCharCell(detailX + i * 8, 76, safeDetail[i], COLOR_GRAY);
     }
   }
 }

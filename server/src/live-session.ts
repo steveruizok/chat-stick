@@ -1,3 +1,4 @@
+import { fetchWebPage } from './web-fetch'
 import { liveModel, thinkingConfig, interactionComplete } from './live-model'
 import { searchDocsKeyword, searchDocsVector } from './docs-search'
 import { type EmailEnv, emailEnabled, sendEmail } from './email'
@@ -90,8 +91,6 @@ interface WebFetchArgs {
 	url?: string
 	max_chars?: number
 }
-
-const MAX_WEB_FETCH_BYTES = 200_000
 
 const AVAILABLE_VOICES = [
 	{ name: 'Zephyr', description: 'Bright' },
@@ -370,19 +369,30 @@ export class LiveSession {
 		}
 		this.lastConnectionAt = now
 
+		const url = new URL(request.url)
+		const requestedChatId = url.searchParams.get('chat_id')
+		const requestedDeviceId = url.searchParams.get('device_id') || 'unknown'
+		if (requestedChatId) {
+			const owner = await this.env.DB.prepare('SELECT device_id FROM conversations WHERE chat_id = ?')
+				.bind(requestedChatId).first<{ device_id: string }>()
+			if (owner && owner.device_id !== requestedDeviceId) {
+				return new Response('Conversation belongs to another device', { status: 403 })
+			}
+		}
 		const sessionGeneration = ++this.sessionGeneration
 		await this.saveConversation()
+		if (sessionGeneration !== this.sessionGeneration) return new Response('Connection superseded', { status: 409 })
 		this.cleanup()
 
 		// Extract device_id, chat_id, voice, and image dimensions from URL
-		const url = new URL(request.url)
-		const requestedChatId = url.searchParams.get('chat_id')
-		this.deviceId = url.searchParams.get('device_id') || 'unknown'
+		this.deviceId = requestedDeviceId
 		this.chatId = requestedChatId || crypto.randomUUID()
 		this.currentVoice = resolveVoice(url.searchParams.get('voice'))
-		this.currentThinkingLevel = requestedChatId
+		const thinkingLevel = requestedChatId
 			? await this.loadThinkingLevelForChat(this.chatId)
 			: DEFAULT_THINKING_LEVEL
+		if (sessionGeneration !== this.sessionGeneration) return new Response('Connection superseded', { status: 409 })
+		this.currentThinkingLevel = thinkingLevel
 		this.locationContext = buildLocationContext(request)
 		this.imageTargetWidth = parsePositiveInt(
 			url.searchParams.get('image_w'),
@@ -420,6 +430,7 @@ export class LiveSession {
 			if (sessionGeneration !== this.sessionGeneration) return
 			console.log('[Device] Disconnected')
 			await this.saveConversation()
+			if (sessionGeneration !== this.sessionGeneration) return
 			this.cleanup()
 		})
 
@@ -432,6 +443,7 @@ export class LiveSession {
 	}
 
 	private async connectGemini(sessionGeneration = this.sessionGeneration) {
+		const isCurrent = this.captureSessionGuard()
 		if (this.geminiConnecting) {
 			return
 		}
@@ -452,10 +464,13 @@ export class LiveSession {
 			'https://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent' +
 			`?key=${this.env.GEMINI_API_KEY}`
 		const userInstructions = await this.getUserInstructionsForPrompt()
-		this.sessionResumptionHandle = await this.loadSessionResumptionHandle()
-		this.pendingInitialHistoryTurns = this.sessionResumptionHandle
-			? []
-			: await this.getConversationHistoryForPrompt()
+		if (!isCurrent()) return
+		const resumptionHandle = await this.loadSessionResumptionHandle()
+		if (!isCurrent()) return
+		const historyTurns = resumptionHandle ? [] : await this.getConversationHistoryForPrompt()
+		if (!isCurrent()) return
+		this.sessionResumptionHandle = resumptionHandle
+		this.pendingInitialHistoryTurns = historyTurns
 		this.activityOpen = false
 
 		try {
@@ -464,6 +479,10 @@ export class LiveSession {
 			})
 
 			const ws = resp.webSocket
+			if (!isCurrent()) {
+				try { ws?.close() } catch { /* already closed */ }
+				return
+			}
 			if (!ws) {
 				this.geminiConnecting = false
 				console.error('[Gemini] WebSocket upgrade failed')
@@ -518,8 +537,9 @@ export class LiveSession {
 				if (!wasReady && resumptionHandleForAttempt) {
 					this.clearSessionResumptionHandle()
 						.then(() => {
-							if (sessionGeneration === this.sessionGeneration) {
+							if (sessionGeneration === this.sessionGeneration && isCurrent()) {
 								this.connectGemini(sessionGeneration).catch((err) => {
+									if (!isCurrent()) return
 									this.geminiConnecting = false
 									console.error('[Gemini] Failed to retry without session resumption:', err)
 								})
@@ -1109,6 +1129,7 @@ export class LiveSession {
 
 			console.log('[Gemini] Setup message sent')
 		} catch (err) {
+			if (!isCurrent()) return
 			this.geminiConnecting = false
 			console.error('[Gemini] Connection error:', err)
 			this.sendToDevice({
@@ -1125,8 +1146,10 @@ export class LiveSession {
 
 	private ensureGeminiSession(sessionGeneration = this.sessionGeneration) {
 		if (this.geminiWs || this.geminiConnecting) return
+		this.state.waitUntil(this.state.storage.setAlarm(Date.now() + LiveSession.IDLE_CLOSE_MS))
 		console.log('[Gemini] Starting session on first device input')
 		this.connectGemini(sessionGeneration).catch((err) => {
+			if (sessionGeneration !== this.sessionGeneration) return
 			this.geminiConnecting = false
 			console.error('[Gemini] Failed to start session:', err)
 		})
@@ -1407,6 +1430,9 @@ export class LiveSession {
 	}
 
 	private async handleGeminiMessage(msg: GeminiMessage) {
+		const sessionIsCurrent = this.captureSessionGuard()
+		const geminiSocket = this.geminiWs
+		const isCurrent = () => sessionIsCurrent() && geminiSocket === this.geminiWs
 		// Session ready
 		if (msg.setupComplete) {
 			console.log('[Gemini] Setup complete')
@@ -1502,15 +1528,18 @@ export class LiveSession {
 			if (completed) {
 				this.sendToDevice({ type: 'turn_complete' })
 				await this.commitExchange()
+				if (!isCurrent()) return
 			}
 			if (completed && this.pendingThinkingLevel) {
 				const level = this.pendingThinkingLevel
 				this.pendingThinkingLevel = null
 				await this.switchThinkingLevel(level)
+				if (!isCurrent()) return
 				return // Do not save an old-session resumption update under the new model.
 			} else if (completed && this.pendingReconnectAfterTurn) {
 				this.pendingReconnectAfterTurn = false
 				await this.reconnectGeminiSession()
+				if (!isCurrent()) return
 			}
 		}
 
@@ -1527,6 +1556,7 @@ export class LiveSession {
 					error: 'tool call canceled by Gemini',
 					durationMs: Date.now() - pending.startMs,
 				})
+				if (!isCurrent()) return
 			}
 		}
 
@@ -1535,6 +1565,7 @@ export class LiveSession {
 			if (update.resumable && update.newHandle) {
 				this.sessionResumptionHandle = update.newHandle
 				await this.saveSessionResumptionHandle(update.newHandle)
+				if (!isCurrent()) return
 			}
 		}
 
@@ -1557,7 +1588,9 @@ export class LiveSession {
 
 					try {
 						results = await searchDocsVector(query, this.env, 3)
+						if (!isCurrent()) return
 					} catch (err) {
+						if (!isCurrent()) return
 						console.warn('[Gemini] Vector search failed, falling back to keyword search:', err)
 					}
 
@@ -1603,11 +1636,13 @@ export class LiveSession {
 						handledBy: 'server',
 						durationMs: Date.now() - startMs,
 					})
+					if (!isCurrent()) return
 				} else if (call.name === 'web_fetch' || call.name === 'fetch_url') {
 					const args = call.args as WebFetchArgs
 					const url = args.url || ''
 					console.log(`[Gemini] Fetching: ${url}`)
 					const result = await fetchWebPage(url, args.max_chars)
+					if (!isCurrent()) return
 					const payload = JSON.stringify({
 						toolResponse: {
 							functionResponses: [
@@ -1630,6 +1665,7 @@ export class LiveSession {
 						handledBy: 'server',
 						durationMs: Date.now() - startMs,
 					})
+					if (!isCurrent()) return
 				} else if (
 					call.name === 'list_files' ||
 					call.name === 'read_file' ||
@@ -1638,6 +1674,7 @@ export class LiveSession {
 					call.name === 'search_files'
 				) {
 					const response = await this.handleFileTool(call.name, call.args)
+					if (!isCurrent()) return
 					const payload = JSON.stringify({
 						toolResponse: {
 							functionResponses: [{ name: call.name, id: call.id, response }],
@@ -1652,6 +1689,7 @@ export class LiveSession {
 						status: 'error' in (response as Record<string, unknown>) ? 'error' : 'ok',
 						durationMs: Date.now() - startMs,
 					})
+					if (!isCurrent()) return
 				} else if (call.name === 'set_voice') {
 					const requested = (call.args as { name?: string }).name || ''
 					const match = findVoice(requested)
@@ -1678,6 +1716,7 @@ export class LiveSession {
 							status: 'error',
 							durationMs: Date.now() - startMs,
 						})
+						if (!isCurrent()) return
 					} else {
 						console.log(`[Gemini] Switching voice → ${match.name}`)
 						this.currentVoice = match.name
@@ -1697,6 +1736,7 @@ export class LiveSession {
 						if (this.geminiWs) this.geminiWs.send(payload)
 						this.sendToDevice({ type: 'voice_changed', voice: match.name })
 						await this.clearSessionResumptionHandle()
+						if (!isCurrent()) return
 						await this.logToolCall({
 							name: call.name,
 							args: call.args,
@@ -1704,6 +1744,7 @@ export class LiveSession {
 							handledBy: 'server',
 							durationMs: Date.now() - startMs,
 						})
+						if (!isCurrent()) return
 						if (this.geminiWs) {
 							try {
 								this.geminiWs.close()
@@ -1714,6 +1755,7 @@ export class LiveSession {
 							this.geminiReady = false
 						}
 						await this.connectGemini()
+						if (!isCurrent()) return
 					}
 				} else if (call.name === 'set_thinking_level') {
 					const level = resolveThinkingLevel(call.args.level)
@@ -1727,9 +1769,11 @@ export class LiveSession {
 						this.pendingThinkingLevel = level
 					}
 					await this.logToolCall({ name: call.name, args: call.args, result, handledBy: 'server', durationMs: Date.now() - startMs })
+					if (!isCurrent()) return
 				} else if (call.name === 'email_me') {
 					const args = call.args as { subject?: string; body?: string }
 					const result = await sendEmail(this.env, args.subject || '', args.body || '')
+					if (!isCurrent()) return
 					const responsePayload =
 						'ok' in result
 							? { result: `email sent to ${result.recipient}` }
@@ -1749,6 +1793,7 @@ export class LiveSession {
 						error: 'ok' in result ? undefined : result.error,
 						durationMs: Date.now() - startMs,
 					})
+					if (!isCurrent()) return
 				} else if (call.name === 'show_image') {
 					const args = call.args as { prompt?: string; reference_image_id?: unknown }
 					const prompt = (args.prompt || '').trim()
@@ -1765,6 +1810,7 @@ export class LiveSession {
 							errorMsg = `invalid reference_image_id: ${args.reference_image_id}`
 						} else {
 							reference = await this.resolveReferenceImage(refId)
+							if (!isCurrent()) return
 							if (!reference) {
 								errorMsg =
 									refId > 0
@@ -1801,6 +1847,7 @@ export class LiveSession {
 							status: 'error',
 							durationMs: Date.now() - startMs,
 						})
+						if (!isCurrent()) return
 					} else {
 						// Tell Gemini the image is on its way so it can keep talking.
 						const ackPayload = JSON.stringify({
@@ -1846,6 +1893,7 @@ export class LiveSession {
 							errorMsg = `invalid reference_image_id: ${args.reference_image_id}`
 						} else {
 							reference = await this.resolveReferenceImage(refId)
+							if (!isCurrent()) return
 							if (!reference) {
 								errorMsg =
 									refId > 0
@@ -1878,6 +1926,7 @@ export class LiveSession {
 							status: 'error',
 							durationMs: Date.now() - startMs,
 						})
+						if (!isCurrent()) return
 					} else {
 						const ackPayload = JSON.stringify({
 							toolResponse: {
@@ -1909,6 +1958,7 @@ export class LiveSession {
 					const response = await this.handleDeviceLogsTool(
 						(call.args ?? {}) as Record<string, unknown>
 					)
+					if (!isCurrent()) return
 					const payload = JSON.stringify({
 						toolResponse: {
 							functionResponses: [{ name: call.name, id: call.id, response }],
@@ -1922,12 +1972,14 @@ export class LiveSession {
 						handledBy: 'server',
 						durationMs: Date.now() - startMs,
 					})
+					if (!isCurrent()) return
 				} else if (
 					call.name === 'list_recent_images' ||
 					call.name === 'search_images' ||
 					call.name === 'show_saved_image'
 				) {
 					const response = await this.handleImageTool(call.name, call.args)
+					if (!isCurrent()) return
 					const payload = JSON.stringify({
 						toolResponse: {
 							functionResponses: [{ name: call.name, id: call.id, response }],
@@ -1942,6 +1994,7 @@ export class LiveSession {
 						status: 'error' in (response as Record<string, unknown>) ? 'error' : 'ok',
 						durationMs: Date.now() - startMs,
 					})
+					if (!isCurrent()) return
 				} else if (call.name === 'new_conversation' || call.name === 'new_chat') {
 					// Handle server-side: close Gemini session and open a fresh one
 					console.log('[Gemini] Resetting conversation')
@@ -1952,8 +2005,11 @@ export class LiveSession {
 						handledBy: 'server',
 						durationMs: Date.now() - startMs,
 					})
+					if (!isCurrent()) return
 					await this.commitExchange()
+					if (!isCurrent()) return
 					await this.clearSessionResumptionHandle()
+					if (!isCurrent()) return
 					this.chatId = crypto.randomUUID()
 					this.currentThinkingLevel = DEFAULT_THINKING_LEVEL
 					this.pendingThinkingLevel = null
@@ -1977,6 +2033,7 @@ export class LiveSession {
 						this.geminiReady = false
 					}
 					await this.connectGemini()
+					if (!isCurrent()) return
 				} else {
 					// Forward tool call to device for execution — log when response arrives
 					this.pendingDeviceCalls.set(call.id, {
@@ -1993,6 +2050,14 @@ export class LiveSession {
 				}
 			}
 		}
+	}
+
+	/** Async work may finish after a reconnect or a new conversation. */
+	private captureSessionGuard() {
+		const generation = this.sessionGeneration
+		const chatId = this.chatId
+		const socket = this.deviceWs
+		return () => generation === this.sessionGeneration && chatId === this.chatId && socket === this.deviceWs
 	}
 
 	private sendToDevice(msg: Record<string, unknown>) {
@@ -2102,6 +2167,7 @@ export class LiveSession {
 		startMs: number,
 		reference?: ImageSummary,
 	): Promise<void> {
+		const isCurrent = this.captureSessionGuard()
 		const turnChatId = this.chatId
 		// For modification requests, attach the previous photo so the image model
 		// generates the new image from it. We already acked Gemini, so if the R2
@@ -2110,6 +2176,7 @@ export class LiveSession {
 		let referenceImage: ReferenceImage | undefined
 		if (reference) {
 			const fetched = await this.fetchReferenceImage(reference)
+			if (!isCurrent()) return
 			if (!fetched) {
 				this.sendToDevice({ type: 'show_image_failed' })
 				await this.logToolCall({
@@ -2120,6 +2187,7 @@ export class LiveSession {
 					status: 'error',
 					durationMs: Date.now() - startMs,
 				})
+				if (!isCurrent()) return
 				return
 			}
 			referenceImage = fetched
@@ -2131,6 +2199,7 @@ export class LiveSession {
 			this.imageTargetHeight,
 			referenceImage
 		)
+		if (!isCurrent()) return
 		if (!result) {
 			this.sendToDevice({ type: 'show_image_failed' })
 			await this.logToolCall({
@@ -2141,6 +2210,7 @@ export class LiveSession {
 				status: 'error',
 				durationMs: Date.now() - startMs,
 			})
+			if (!isCurrent()) return
 			return
 		}
 
@@ -2149,6 +2219,7 @@ export class LiveSession {
 			prompt,
 			turnChatId
 		)
+		if (!isCurrent()) return
 
 		if (imageId) this.lastImageId = imageId
 		this.sendToDevice({
@@ -2173,6 +2244,7 @@ export class LiveSession {
 			handledBy: 'server',
 			durationMs: Date.now() - startMs,
 		})
+		if (!isCurrent()) return
 	}
 
 	/**
@@ -2187,6 +2259,7 @@ export class LiveSession {
 		animationGroup?: string,
 		frameIndex?: number
 	): Promise<{ ditheredKey?: string; originalKey?: string; imageId?: number }> {
+		const isCurrent = this.captureSessionGuard()
 		// Persist the dithered PNG (what the device shows) and the original
 		// full-color model output (for archival / future re-dither) to R2 if
 		// STORAGE is bound. Best-effort; failure here doesn't block sending to
@@ -2203,8 +2276,10 @@ export class LiveSession {
 				await this.env.STORAGE.put(ditheredKey, result.ditheredPng, {
 					httpMetadata: { contentType: 'image/png' },
 				})
+				if (!isCurrent()) return {}
 				console.log(`[ImageGen] Stored dithered PNG at ${ditheredKey}`)
 			} catch (err) {
+				if (!isCurrent()) return {}
 				console.error('[ImageGen] R2 upload (dithered) failed:', err)
 				ditheredKey = undefined
 			}
@@ -2212,8 +2287,10 @@ export class LiveSession {
 				await this.env.STORAGE.put(originalKey, result.originalImage, {
 					httpMetadata: { contentType: result.originalMimeType },
 				})
+				if (!isCurrent()) return {}
 				console.log(`[ImageGen] Stored original at ${originalKey}`)
 			} catch (err) {
+				if (!isCurrent()) return {}
 				console.error('[ImageGen] R2 upload (original) failed:', err)
 				originalKey = undefined
 			}
@@ -2237,7 +2314,9 @@ export class LiveSession {
 				animationGroup: animationGroup ?? null,
 				frameIndex: frameIndex ?? null,
 			})
+			if (!isCurrent()) return {}
 		} catch (err) {
+			if (!isCurrent()) return {}
 			console.error('[ImageGen] Failed to record image in D1:', err)
 		}
 
@@ -2257,6 +2336,7 @@ export class LiveSession {
 		index: number,
 		total: number
 	): Promise<number | undefined> {
+		const isCurrent = this.captureSessionGuard()
 		const { imageId } = await this.persistGeneratedImage(
 			result,
 			prompt,
@@ -2264,6 +2344,7 @@ export class LiveSession {
 			animationGroup,
 			index
 		)
+		if (!isCurrent()) return
 		if (index === 0) {
 			// The animation's first frame is the canonical image "on screen":
 			// reference_image_id 0 anchors on it.
@@ -2307,6 +2388,7 @@ export class LiveSession {
 		startMs: number,
 		reference?: ImageSummary
 	): Promise<void> {
+		const isCurrent = this.captureSessionGuard()
 		const turnChatId = this.chatId
 		const animationGroup = crypto.randomUUID()
 		const total = framePrompts.length
@@ -2314,6 +2396,7 @@ export class LiveSession {
 		let referenceImage: ReferenceImage | undefined
 		if (reference) {
 			const fetched = await this.fetchReferenceImage(reference)
+			if (!isCurrent()) return
 			if (!fetched) {
 				this.sendToDevice({ type: 'show_image_failed' })
 				await this.logToolCall({
@@ -2324,6 +2407,7 @@ export class LiveSession {
 					status: 'error',
 					durationMs: Date.now() - startMs,
 				})
+				if (!isCurrent()) return
 				return
 			}
 			referenceImage = fetched
@@ -2336,6 +2420,7 @@ export class LiveSession {
 			this.imageTargetHeight,
 			referenceImage
 		)
+		if (!isCurrent()) return
 		if (stripResults) {
 			const frameIds: number[] = []
 			for (let index = 0; index < stripResults.length; index++) {
@@ -2347,6 +2432,7 @@ export class LiveSession {
 					index,
 					total
 				)
+				if (!isCurrent()) return
 				if (imageId) frameIds.push(imageId)
 			}
 			await this.logToolCall({
@@ -2362,6 +2448,7 @@ export class LiveSession {
 				handledBy: 'server',
 				durationMs: Date.now() - startMs,
 			})
+			if (!isCurrent()) return
 			return
 		}
 		console.log('[ImageGen] Strip generation failed; falling back to chained frames')
@@ -2378,6 +2465,7 @@ export class LiveSession {
 				referenceImage,
 				{ index, total }
 			)
+			if (!isCurrent()) return
 			if (!result) {
 				failure = `frame ${index + 1}/${total} failed to generate`
 				break
@@ -2391,6 +2479,7 @@ export class LiveSession {
 				index,
 				total
 			)
+			if (!isCurrent()) return
 			if (imageId) frameIds.push(imageId)
 			framesSent++
 
@@ -2411,6 +2500,7 @@ export class LiveSession {
 				status: 'error',
 				durationMs: Date.now() - startMs,
 			})
+			if (!isCurrent()) return
 			return
 		}
 
@@ -2431,6 +2521,7 @@ export class LiveSession {
 			status: failure ? 'error' : 'ok',
 			durationMs: Date.now() - startMs,
 		})
+		if (!isCurrent()) return
 	}
 
 	private async getUserInstructionsForPrompt(): Promise<string> {
@@ -2587,12 +2678,15 @@ export class LiveSession {
 		name: string,
 		args: Record<string, unknown>,
 	): Promise<Record<string, unknown>> {
+		const isCurrent = this.captureSessionGuard()
 		const path = typeof args.path === 'string' ? args.path.trim() : ''
 		const content = typeof args.content === 'string' ? args.content : ''
 		const query = typeof args.query === 'string' ? args.query : ''
 		try {
 			await ensureUserInstructionsFile(this.env.DB, this.deviceId)
+			if (!isCurrent()) return { error: 'session changed' }
 		} catch (err) {
+			if (!isCurrent()) return { error: 'session changed' }
 			return {
 				error: `failed to ensure ${USER_INSTRUCTIONS_PATH}: ${
 					err instanceof Error ? err.message : String(err)
@@ -2603,17 +2697,21 @@ export class LiveSession {
 		switch (name) {
 			case 'list_files': {
 				const files = await listFiles(this.env.DB, this.deviceId)
+				if (!isCurrent()) return { error: 'session changed' }
 				return { files, count: files.length }
 			}
 			case 'read_file': {
 				if (!path) return { error: 'path is required' }
 				const file = await readFile(this.env.DB, this.deviceId, path)
+				if (!isCurrent()) return { error: 'session changed' }
 				if (file) {
 					return { path, content: file.content, updated_at: file.updated_at }
 				}
 				const resolution = await resolveFilePath(this.env.DB, this.deviceId, path)
+				if (!isCurrent()) return { error: 'session changed' }
 				if (resolution.kind === 'auto') {
 					const matched = await readFile(this.env.DB, this.deviceId, resolution.path)
+					if (!isCurrent()) return { error: 'session changed' }
 					if (matched) {
 						return {
 							path: resolution.path,
@@ -2636,6 +2734,7 @@ export class LiveSession {
 					}
 				}
 				await writeFile(this.env.DB, this.deviceId, path, content)
+				if (!isCurrent()) return { error: 'session changed' }
 				return {
 					ok: true,
 					path,
@@ -2646,6 +2745,7 @@ export class LiveSession {
 			case 'append_to_file': {
 				if (!path) return { error: 'path is required' }
 				const existing = await readFile(this.env.DB, this.deviceId, path)
+				if (!isCurrent()) return { error: 'session changed' }
 				const projectedSize = (existing?.content.length ?? 0) + content.length
 				if (projectedSize > MAX_FILE_BYTES) {
 					return {
@@ -2653,6 +2753,7 @@ export class LiveSession {
 					}
 				}
 				await appendFile(this.env.DB, this.deviceId, path, content)
+				if (!isCurrent()) return { error: 'session changed' }
 				return {
 					ok: true,
 					path,
@@ -2663,6 +2764,7 @@ export class LiveSession {
 			case 'search_files': {
 				if (!query.trim()) return { error: 'query is required' }
 				const hits = await searchFiles(this.env.DB, this.deviceId, query)
+				if (!isCurrent()) return { error: 'session changed' }
 				return { hits, count: hits.length }
 			}
 			default:
@@ -2674,6 +2776,7 @@ export class LiveSession {
 		name: string,
 		args: Record<string, unknown>,
 	): Promise<Record<string, unknown>> {
+		const isCurrent = this.captureSessionGuard()
 		const formatSummary = (img: ImageSummary) => ({
 			id: img.id,
 			prompt: img.prompt,
@@ -2689,6 +2792,7 @@ export class LiveSession {
 				const rawLimit = args.limit
 				const limit = typeof rawLimit === 'number' ? rawLimit : 10
 				const images = await listRecentImages(this.env.DB, this.deviceId, limit)
+				if (!isCurrent()) return { error: 'session changed' }
 				return { images: images.map(formatSummary), count: images.length }
 			}
 			case 'search_images': {
@@ -2697,6 +2801,7 @@ export class LiveSession {
 				const rawLimit = args.limit
 				const limit = typeof rawLimit === 'number' ? rawLimit : 10
 				const hits = await searchImages(this.env.DB, this.deviceId, query, limit)
+				if (!isCurrent()) return { error: 'session changed' }
 				return {
 					hits: hits.map((hit) => ({
 						...formatSummary(hit),
@@ -2711,6 +2816,7 @@ export class LiveSession {
 				const id = typeof idArg === 'number' ? idArg : Number(idArg)
 				if (!Number.isFinite(id) || id <= 0) return { error: 'id is required' }
 				const image = await getImageById(this.env.DB, this.deviceId, id)
+				if (!isCurrent()) return { error: 'session changed' }
 				if (!image) return { error: `image not found: ${id}` }
 				// An animation frame replays the whole animation, anchored on its
 				// first frame; a plain image re-displays as before.
@@ -2721,6 +2827,7 @@ export class LiveSession {
 						this.deviceId,
 						image.animation_group
 					)
+					if (!isCurrent()) return { error: 'session changed' }
 					if (groupFrames.length > 0) frames = groupFrames
 				}
 				const first = frames[0]
@@ -2760,51 +2867,47 @@ export class LiveSession {
 		}
 	}
 
-	private async commitExchange() {
+	// Capture each turn before yielding; a failed transaction remains at the head
+	// of the queue and is retried by the next commit (including disconnect).
+	private pendingExchanges: Array<{ chatId: string; deviceId: string; user: string; assistant: string }> = []
+	private exchangeWrite: Promise<void> = Promise.resolve()
+
+	private commitExchange(): Promise<void> {
 		const user = this.currentUserText.trim()
 		const assistant = this.currentAssistantText.trim()
-		this.currentUserText = ''
-		this.currentAssistantText = ''
-
-		if (!user && !assistant) return
-
-		try {
-			// Get existing messages
-			const row = await this.env.DB.prepare('SELECT messages FROM conversations WHERE chat_id = ?')
-				.bind(this.chatId)
-				.first<{ messages: string }>()
-
-			const messages: ConversationMessage[] = row?.messages ? JSON.parse(row.messages) : []
-
-			if (user) messages.push({ role: 'user', content: user })
-			if (assistant) messages.push({ role: 'assistant', content: assistant })
-
-			// Keep last 20 messages
-			const trimmed = messages.slice(-20)
-
-			await this.env.DB.prepare(
-				`INSERT INTO conversations (chat_id, device_id, messages, last_message, updated_at)
-				 VALUES (?, ?, ?, ?, datetime('now'))
-				 ON CONFLICT(chat_id) DO UPDATE SET
-				   messages = excluded.messages,
-				   last_message = excluded.last_message,
-				   updated_at = excluded.updated_at`,
-			)
-				.bind(this.chatId, this.deviceId, JSON.stringify(trimmed), assistant || null)
-				.run()
-
-			// Log the exchange
-			await this.env.DB.prepare(
-				`INSERT INTO message_log (device_id, chat_id, user_text, assistant_text)
-				 VALUES (?, ?, ?, ?)`,
-			)
-				.bind(this.deviceId, this.chatId, user || null, assistant || null)
-				.run()
-
-			console.log(`[DB] Saved exchange: chat=${this.chatId} (${trimmed.length} messages)`)
-		} catch (err) {
-			console.error('[DB] Failed to save exchange:', err)
+		if (user || assistant) {
+			this.pendingExchanges.push({ chatId: this.chatId, deviceId: this.deviceId, user, assistant })
+			this.currentUserText = ''
+			this.currentAssistantText = ''
 		}
+		this.exchangeWrite = this.exchangeWrite.then(async () => {
+			while (this.pendingExchanges.length) {
+				const exchange = this.pendingExchanges[0]
+				const { chatId, deviceId, user, assistant } = exchange
+				const row = await this.env.DB.prepare('SELECT messages FROM conversations WHERE chat_id = ? AND device_id = ?')
+					.bind(chatId, deviceId).first<{ messages: string }>()
+				const messages: ConversationMessage[] = row?.messages ? JSON.parse(row.messages) : []
+				if (user) messages.push({ role: 'user', content: user })
+				if (assistant) messages.push({ role: 'assistant', content: assistant })
+				// D1 batches are transactional: history and telemetry succeed together.
+				await this.env.DB.batch([
+					this.env.DB.prepare(`INSERT INTO conversations (chat_id, device_id, messages, last_message, updated_at)
+						VALUES (?, ?, ?, ?, datetime('now'))
+						ON CONFLICT(chat_id) DO UPDATE SET messages = excluded.messages,
+						last_message = excluded.last_message, updated_at = excluded.updated_at
+						WHERE conversations.device_id = excluded.device_id`)
+						.bind(chatId, deviceId, JSON.stringify(messages.slice(-20)), assistant || null),
+					this.env.DB.prepare(`INSERT INTO message_log (device_id, chat_id, user_text, assistant_text)
+						SELECT ?, ?, ?, ? WHERE EXISTS
+						(SELECT 1 FROM conversations WHERE chat_id = ? AND device_id = ?)`)
+						.bind(deviceId, chatId, user || null, assistant || null, chatId, deviceId),
+				])
+				this.pendingExchanges.shift()
+			}
+		}).catch((err) => {
+			console.error('[DB] Failed to save exchange; retained for retry:', err)
+		})
+		return this.exchangeWrite
 	}
 
 	private async saveConversation() {
@@ -2844,21 +2947,30 @@ export class LiveSession {
 	}
 
 	private async switchThinkingLevel(level: ThinkingLevel) {
+		const sessionIsCurrent = this.captureSessionGuard()
+		const geminiSocket = this.geminiWs
+		const isCurrent = () => sessionIsCurrent() && geminiSocket === this.geminiWs
 		if (level === this.currentThinkingLevel) {
 			this.sendToDevice({ type: 'thinking_changed', level })
 			return
 		}
 		await this.commitExchange()
+		if (!isCurrent()) return
 		await this.clearSessionResumptionHandle()
+		if (!isCurrent()) return
 		this.currentThinkingLevel = level
 		this.pendingThinkingLevel = null
 		this.pendingReconnectAfterTurn = false
 		await this.saveThinkingLevelForChat(level)
+		if (!isCurrent()) return
 		this.sendToDevice({ type: 'thinking_changed', level })
 		await this.reconnectGeminiSession({ clearResumptionHandle: true })
 	}
 
 	private async reconnectGeminiSession(options: { clearResumptionHandle?: boolean } = {}) {
+		const sessionIsCurrent = this.captureSessionGuard()
+		const geminiSocket = this.geminiWs
+		const isCurrent = () => sessionIsCurrent() && geminiSocket === this.geminiWs
 		this.resetCurrentTurnMetrics()
 		this.queuedAudioChunks = []
 		this.queuedAudioBytes = 0
@@ -2867,6 +2979,7 @@ export class LiveSession {
 		this.activityOpen = false
 		if (options.clearResumptionHandle) {
 			await this.clearSessionResumptionHandle()
+			if (!isCurrent()) return
 		}
 		if (this.geminiWs) {
 			try {
@@ -2882,12 +2995,18 @@ export class LiveSession {
 	}
 
 	async alarm() {
+		const isCurrent = this.captureSessionGuard()
 		if (!this.geminiWs && !this.deviceWs) return
 		const idle = Date.now() - this.lastActivityMs
 		if (idle >= LiveSession.IDLE_CLOSE_MS) {
 			if (this.geminiWs) {
 				console.log(`[Session] Idle ${Math.floor(idle / 1000)}s — closing Gemini`)
 				await this.commitExchange()
+				if (!isCurrent()) return
+				if (Date.now() - this.lastActivityMs < LiveSession.IDLE_CLOSE_MS) {
+					await this.state.storage.setAlarm(this.lastActivityMs + LiveSession.IDLE_CLOSE_MS)
+					return
+				}
 				try {
 					this.geminiWs.close()
 				} catch {
@@ -2968,220 +3087,6 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 		binary += String.fromCharCode(...slice)
 	}
 	return btoa(binary)
-}
-
-async function fetchWebPage(
-	url: string,
-	maxChars = 4000,
-): Promise<{
-	url: string
-	status: number
-	content_type: string
-	title: string | null
-	content: string
-	truncated: boolean
-}> {
-	const normalizedMaxChars = Math.max(500, Math.min(maxChars || 4000, 10000))
-	const validated = validateWebFetchUrl(url)
-
-	try {
-		if (!validated.ok) {
-			return {
-				url,
-				status: 0,
-				content_type: 'error',
-				title: null,
-				content: `Error: ${validated.error}`,
-				truncated: false,
-			}
-		}
-
-		const controller = new AbortController()
-		const timeout = setTimeout(() => controller.abort(), 10000)
-		let resp: Response
-		try {
-			resp = await fetch(validated.url, {
-				headers: {
-					'User-Agent': 'm5-live-assistant/1.0',
-					Accept: 'text/html,application/json,text/plain,*/*',
-				},
-				signal: controller.signal,
-			})
-			const contentLength = Number(resp.headers.get('content-length') || '0')
-			if (contentLength > MAX_WEB_FETCH_BYTES) {
-				return {
-					url: resp.url,
-					status: resp.status,
-					content_type: resp.headers.get('content-type') || 'unknown',
-					title: null,
-					content: `Error: response too large (${contentLength} bytes, max ${MAX_WEB_FETCH_BYTES})`,
-					truncated: false,
-				}
-			}
-		} finally {
-			clearTimeout(timeout)
-		}
-
-		const contentType = resp.headers.get('content-type') || ''
-		const read = await readResponseTextWithLimit(resp, MAX_WEB_FETCH_BYTES)
-		let body = read.text
-		const title = extractHtmlTitle(body, contentType)
-
-		if (contentType.includes('html')) {
-			// Strip scripts/styles and tags; collapse whitespace
-			body = body
-				.replace(/<script[\s\S]*?<\/script>/gi, ' ')
-				.replace(/<style[\s\S]*?<\/style>/gi, ' ')
-				.replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
-				.replace(/<[^>]+>/g, ' ')
-				.replace(/&nbsp;/g, ' ')
-				.replace(/&amp;/g, '&')
-				.replace(/&lt;/g, '<')
-				.replace(/&gt;/g, '>')
-				.replace(/&quot;/g, '"')
-				.replace(/&#39;/g, "'")
-				.replace(/\s+/g, ' ')
-				.trim()
-		} else {
-			body = body.replace(/\s+/g, ' ').trim()
-		}
-
-		const truncated = read.truncated || body.length > normalizedMaxChars
-		if (body.length > normalizedMaxChars) {
-			body = body.slice(0, normalizedMaxChars) + '... [truncated]'
-		}
-
-		if (!resp.ok) {
-			body = body || `Error: HTTP ${resp.status} ${resp.statusText}`
-		}
-
-		return {
-			url: resp.url,
-			status: resp.status,
-			content_type: contentType || 'unknown',
-			title,
-			content: body || '(empty response)',
-			truncated,
-		}
-	} catch (err) {
-		return {
-			url,
-			status: 0,
-			content_type: 'error',
-			title: null,
-			content: `Error fetching URL: ${err instanceof Error ? err.message : String(err)}`,
-			truncated: false,
-		}
-	}
-}
-
-function validateWebFetchUrl(
-	rawUrl: string,
-): { ok: true; url: string } | { ok: false; error: string } {
-	let parsed: URL
-	try {
-		parsed = new URL(rawUrl)
-	} catch {
-		return { ok: false, error: 'URL is invalid' }
-	}
-
-	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-		return { ok: false, error: 'URL must start with http:// or https://' }
-	}
-
-	const rawHostname = parsed.hostname.toLowerCase()
-	const hostname =
-		rawHostname.startsWith('[') && rawHostname.endsWith(']')
-			? rawHostname.slice(1, -1)
-			: rawHostname
-	const isIpv6Literal = hostname.includes(':')
-	if (
-		hostname === 'localhost' ||
-		hostname.endsWith('.localhost') ||
-		hostname.endsWith('.local') ||
-		hostname.endsWith('.internal') ||
-		(isIpv6Literal &&
-			(hostname === '::1' ||
-				hostname.startsWith('fe80:') ||
-				hostname.startsWith('fc') ||
-				hostname.startsWith('fd')))
-	) {
-		return { ok: false, error: 'local or private network URLs are not allowed' }
-	}
-
-	const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-	if (ipv4) {
-		const octets = ipv4.slice(1).map(Number)
-		if (octets.some((n) => n < 0 || n > 255)) {
-			return { ok: false, error: 'IP address is invalid' }
-		}
-
-		const [a, b] = octets
-		const privateOrReserved =
-			a === 0 ||
-			a === 10 ||
-			a === 127 ||
-			(a === 100 && b >= 64 && b <= 127) ||
-			(a === 169 && b === 254) ||
-			(a === 172 && b >= 16 && b <= 31) ||
-			(a === 192 && b === 168) ||
-			a >= 224
-		if (privateOrReserved) {
-			return { ok: false, error: 'local or private network URLs are not allowed' }
-		}
-	}
-
-	return { ok: true, url: parsed.toString() }
-}
-
-async function readResponseTextWithLimit(
-	resp: Response,
-	maxBytes: number,
-): Promise<{ text: string; truncated: boolean }> {
-	if (!resp.body) {
-		return { text: await resp.text(), truncated: false }
-	}
-
-	const reader = resp.body.getReader()
-	const decoder = new TextDecoder()
-	let total = 0
-	let text = ''
-	let truncated = false
-
-	while (true) {
-		const { done, value } = await reader.read()
-		if (done) break
-		if (!value) continue
-
-		total += value.byteLength
-		if (total > maxBytes) {
-			const allowed = Math.max(0, value.byteLength - (total - maxBytes))
-			if (allowed > 0) {
-				text += decoder.decode(value.slice(0, allowed), { stream: true })
-			}
-			truncated = true
-			try {
-				await reader.cancel()
-			} catch {
-				// ignore
-			}
-			break
-		}
-
-		text += decoder.decode(value, { stream: true })
-	}
-
-	text += decoder.decode()
-	return { text, truncated }
-}
-
-function extractHtmlTitle(body: string, contentType: string): string | null {
-	if (!contentType.includes('html')) return null
-
-	const match = body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
-	if (!match) return null
-
-	return match[1].replace(/\s+/g, ' ').trim() || null
 }
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {

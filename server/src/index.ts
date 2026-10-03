@@ -31,17 +31,21 @@ async function findLatestFirmware(
 			: [`chat-stick/firmware/${device}/`]
 	let latest: { version: number; key: string } | null = null
 	for (const prefix of prefixes) {
-		const list = await env.STORAGE.list({ prefix })
-		for (const obj of list.objects) {
-			const objectName = obj.key.slice(prefix.length)
-			if (objectName.includes('/')) continue
-			const match = objectName.match(/^firmware-v(\d+)\.bin$/)
-			if (!match) continue
-			const version = Number(match[1])
-			if (!latest || version > latest.version) {
-				latest = { version, key: obj.key }
+		let cursor: string | undefined
+		do {
+			const list = await env.STORAGE.list({ prefix, cursor })
+			for (const obj of list.objects) {
+				const objectName = obj.key.slice(prefix.length)
+				if (objectName.includes('/')) continue
+				const match = objectName.match(/^firmware-v(\d+)\.bin$/)
+				if (!match) continue
+				const version = Number(match[1])
+				if (!latest || version > latest.version) {
+					latest = { version, key: obj.key }
+				}
 			}
-		}
+			cursor = list.truncated ? list.cursor : undefined
+		} while (cursor)
 	}
 	return latest
 }
@@ -122,6 +126,9 @@ export default {
 			}
 
 			case '/firmware/download': {
+				if (!isAuthorizedDeviceRequest(request, env)) {
+					return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
+				}
 				const device = resolveFirmwareDevice(url)
 				const latest = await findLatestFirmware(env, device)
 				if (!env.STORAGE || !latest) {
@@ -173,6 +180,13 @@ export default {
 
 				const sessionMatch = url.pathname.match(/^\/session\/(.+)$/)
 				if (sessionMatch) {
+					const authorized =
+						isAuthorizedHistoryRequest(request, env) ||
+						isAuthenticatedDeviceRequest(request, env)
+					if (!authorized) {
+						return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
+					}
+
 					const chatId = decodeURIComponent(sessionMatch[1])
 					const row = await env.DB.prepare(
 						`SELECT chat_id, device_id, last_message, updated_at
@@ -190,13 +204,6 @@ export default {
 
 					if (!row) {
 						return new Response('Not found', { status: 404, headers: corsHeaders() })
-					}
-
-					const authorized =
-						isAuthorizedHistoryRequest(request, env) ||
-						isAuthenticatedDeviceRequest(request, env)
-					if (!authorized) {
-						return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
 					}
 
 					return new Response(

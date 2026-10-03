@@ -1,6 +1,7 @@
 #include "LiveSessionService.h"
 
 #include "credentials.h"
+#include "util/OtaPolicy.h"
 #include "hal/BoardPower.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -188,24 +189,6 @@ const char *httpSchemeForEndpoint(const ServerEndpoint &endpoint) {
  */
 const char *wsSchemeForEndpoint(const ServerEndpoint &endpoint) {
   return strcmp(httpSchemeForEndpoint(endpoint), "https") == 0 ? "wss" : "ws";
-}
-
-/**
- * @brief Look up a pinned CA certificate for an https URL.
- * @param url Full URL to dial.
- * @return CA certificate string, or nullptr when no matching endpoint is found.
- */
-const char *caCertForUrl(const String &url) {
-  for (int i = 0; i < SERVER_ENDPOINT_COUNT; i++) {
-    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[i];
-    const String httpsPrefix =
-        String("https://") + endpointHostForConnection(endpoint);
-    if (url == httpsPrefix || url.startsWith(httpsPrefix + "/") ||
-        url.startsWith(httpsPrefix + ":")) {
-      return endpoint.ca_cert;
-    }
-  }
-  return nullptr;
 }
 
 /**
@@ -704,28 +687,39 @@ bool LiveSessionService::downloadAndApplyFirmwareUpdate(
     return false;
   }
 
+  const ServerEndpoint *trustedEndpoint = nullptr;
+  for (int i = 0; i < SERVER_ENDPOINT_COUNT; ++i) {
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[i];
+    if (OtaPolicy::allows(downloadUrl.c_str(), endpointBaseUrl(endpoint).c_str(),
+                          endpointHostForConnection(endpoint).c_str(),
+                          endpoint.ca_cert && endpoint.ca_cert[0], FIRMWARE_DEVICE)) {
+      trustedEndpoint = &endpoint;
+      break;
+    }
+  }
+  if (!trustedEndpoint) {
+    outError = "Untrusted firmware origin or missing CA";
+    return false;
+  }
+
   logClient("OTA", "downloading update from %s", downloadUrl.c_str());
   disconnect();
   delay(100);
 
   HTTPClient http;
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
   http.setTimeout(60000);
 
   if (urlUsesHttps(downloadUrl)) {
     WiFiClientSecure client;
-    const char *caCert = caCertForUrl(downloadUrl);
-    if (caCert) {
-      client.setCACert(caCert);
-    } else {
-      client.setInsecure();
-    }
+    client.setCACert(trustedEndpoint->ca_cert);
 
     if (!http.begin(client, downloadUrl)) {
       outError = "Could not start download";
       return false;
     }
 
+    addDeviceAuthHeader(http);
     const bool ok = runFirmwareUpdateDownload(http, outError, _callbacks);
     http.end();
     return ok;
@@ -737,6 +731,7 @@ bool LiveSessionService::downloadAndApplyFirmwareUpdate(
     return false;
   }
 
+  addDeviceAuthHeader(http);
   const bool ok = runFirmwareUpdateDownload(http, outError, _callbacks);
   http.end();
   return ok;
