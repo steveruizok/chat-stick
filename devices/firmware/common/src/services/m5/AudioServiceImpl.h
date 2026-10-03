@@ -126,18 +126,21 @@ void AudioService::setVolume(int level) {
 }
 
 bool AudioService::startRecording() {
+  Board::setAudioAmpEnabled(false);
   M5.Speaker.stop();
   M5.Speaker.end();
   delay(20);
 
   resetPlayback();
   const bool ready = M5.Mic.begin();
+  _recording = ready;
   delay(20);
   return ready;
 }
 
 void AudioService::stopRecording() {
   M5.Mic.end();
+  _recording = false;
   delay(20);
   beginSpeaker();
   setVolume(_volume);
@@ -201,21 +204,15 @@ bool AudioService::playMelody(const String &melody) {
 }
 
 bool AudioService::playTone(int frequencyHz, int durationMs) {
-  if (frequencyHz <= 0 || durationMs <= 0) {
+  if (_recording || frequencyHz <= 0 || durationMs <= 0) {
     return false;
   }
+  Board::setAudioAmpEnabled(true);
   M5.Speaker.tone(frequencyHz, static_cast<uint32_t>(durationMs));
   return true;
 }
 
-void AudioService::resetPlayback() {
-  _playWritePos = 0;
-  _playReadPos = 0;
-  _playbackStarted = false;
-  _chunkInFlight = false;
-  resetEqState();
-  M5.Speaker.stop();
-}
+void AudioService::resetPlayback() { stopPlayback(); }
 
 bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
   if (len == 0) {
@@ -226,7 +223,8 @@ bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
     compactPlaybackBuffer();
   }
 
-  if (_playWritePos + static_cast<int>(len) > _playCapacity) {
+  if (!data || len % sizeof(int16_t) != 0 ||
+      len > static_cast<size_t>(_playCapacity - _playWritePos)) {
     Serial.printf("[Audio] Playback overflow, dropping %u bytes\n",
                   static_cast<unsigned>(len));
     return false;
@@ -256,7 +254,9 @@ bool AudioService::advancePlayback() {
     compactPlaybackBuffer();
   }
 
-  return playAvailableChunk();
+  const bool started = playAvailableChunk();
+  if (playbackIdle()) Board::setAudioAmpEnabled(false);
+  return started;
 }
 
 bool AudioService::speakerBusy() const {
@@ -269,7 +269,19 @@ bool AudioService::playbackIdle() const {
 }
 
 void AudioService::stopPlayback() {
+  Board::setAudioAmpEnabled(false);
   M5.Speaker.stop();
+  // stop() queues a request; the audio task may still read our PCM buffer.
+  // Keep its bytes and offsets intact until that task releases the channel.
+  const unsigned long startedAt = millis();
+  while (M5.Speaker.isPlaying()) {
+    if (millis() - startedAt >= 100) {
+      M5.Speaker.end(); // Joins the speaker task before releasing its buffers.
+      if (!_recording) beginSpeaker();
+      break;
+    }
+    delay(1);
+  }
   _chunkInFlight = false;
   _playbackStarted = false;
   _playReadPos = 0;
@@ -283,6 +295,7 @@ void AudioService::beginSpeaker() {
   Board::configureSpeaker(cfg, _useExternalSpeaker, _externalSpeakerGain);
   M5.Speaker.config(cfg);
   M5.Speaker.begin();
+  Board::setAudioAmpEnabled(false);
 }
 
 void AudioService::setUseExternalSpeaker(bool enabled) {
@@ -292,7 +305,7 @@ void AudioService::setUseExternalSpeaker(bool enabled) {
   }
   _useExternalSpeaker = enabled;
   Serial.printf("[Audio] External speaker %s\n", enabled ? "enabled" : "disabled");
-  if (_playBuffer != nullptr) {
+  if (_playBuffer != nullptr && !_recording) {
     stopPlayback();
     beginSpeaker();
     setVolume(_volume);
@@ -306,7 +319,7 @@ void AudioService::setExternalSpeakerGain(int gain) {
   }
   _externalSpeakerGain = clamped;
   Serial.printf("[Audio] External speaker gain set to %d\n", _externalSpeakerGain);
-  if (_useExternalSpeaker && _playBuffer != nullptr) {
+  if (_useExternalSpeaker && _playBuffer != nullptr && !_recording) {
     stopPlayback();
     beginSpeaker();
     setVolume(_volume);
@@ -335,7 +348,9 @@ bool AudioService::playAvailableChunk() {
 
   auto *start = reinterpret_cast<int16_t *>(_playBuffer + _playReadPos);
   const int samples = available / static_cast<int>(sizeof(int16_t));
+  Board::setAudioAmpEnabled(true);
   if (!M5.Speaker.playRaw(start, samples, PLAY_SAMPLE_RATE, false, 1, 0)) {
+    Board::setAudioAmpEnabled(false);
     return false;
   }
   _playReadPos = _playWritePos;
@@ -374,7 +389,7 @@ void AudioService::applyInternalSpeakerEq(int16_t *samples, int count) {
 }
 
 bool AudioService::playToneSequence(const String &sequence) {
-  if (sequence.isEmpty()) {
+  if (_recording || sequence.isEmpty()) {
     return false;
   }
 
@@ -419,11 +434,13 @@ bool AudioService::playToneSequence(const String &sequence) {
       continue;
     }
 
+    Board::setAudioAmpEnabled(true);
     M5.Speaker.tone(frequency, duration);
     delay(duration);
     played = true;
     start = end + 1;
   }
 
+  stopPlayback();
   return played;
 }

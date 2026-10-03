@@ -77,9 +77,9 @@ private:
   int wrapBodyText(const String &text, String out[], int maxRows) const;
   void flushCanvas(bool forceFull = false);
   void drawLine(int row, const String &text, uint16_t color) const;
-  void drawCharCell(int x, int yTop, char c, uint16_t color) const;
+  void drawCharCell(int x, int yTop, char c, uint16_t color, int scale = 1) const;
   void drawBitmapGlyph(int x, int yTop, const uint8_t *bits,
-                       uint16_t color) const;
+                       uint16_t color, int scale = 1) const;
   void drawGlyphAtRight(int row, char glyph, uint16_t color) const;
   void drawPageIndicator(int pageIndex, int pageCount) const;
   void drawMenu(const DisplayState &state) const;

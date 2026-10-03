@@ -1,0 +1,77 @@
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+namespace DisplayGlyphs {
+// Internal single-cell codes, separate from existing UI markers 1..3.
+constexpr uint32_t TurkishCodepoints[] = {
+    0x00c7, 0x00e7, 0x011e, 0x011f, 0x0130, 0x0131,
+    0x00d6, 0x00f6, 0x015e, 0x015f, 0x00dc, 0x00fc};
+constexpr uint8_t TurkishBits[12][16] = {
+  {0,0,0x3c,0x66,0x60,0x60,0x60,0x60,0x60,0x66,0x3c,0x08,0x0c,0x18,0,0}, // Ç
+  {0,0,0,0,0,0x3c,0x66,0x60,0x60,0x66,0x3c,0x08,0x0c,0x18,0,0}, // ç
+  {0x24,0x18,0,0x3c,0x66,0x60,0x60,0x6e,0x66,0x66,0x3e,0,0,0,0,0}, // Ğ
+  {0,0,0x24,0x18,0,0x3e,0x66,0x66,0x66,0x3e,0x06,0x66,0x3c,0,0,0}, // ğ
+  {0x18,0x18,0,0x3c,0x18,0x18,0x18,0x18,0x18,0x18,0x3c,0,0,0,0,0}, // İ
+  {0,0,0,0,0,0x38,0x18,0x18,0x18,0x18,0x3c,0,0,0,0,0}, // ı
+  {0x66,0x66,0,0x3c,0x66,0x66,0x66,0x66,0x66,0x66,0x3c,0,0,0,0,0}, // Ö
+  {0,0,0x66,0x66,0,0x3c,0x66,0x66,0x66,0x66,0x3c,0,0,0,0,0}, // ö
+  {0,0,0x3c,0x66,0x60,0x30,0x18,0x0c,0x06,0x66,0x3c,0x08,0x0c,0x18,0,0}, // Ş
+  {0,0,0,0,0,0x3e,0x60,0x3c,0x06,0x66,0x3c,0x08,0x0c,0x18,0,0}, // ş
+  {0x66,0x66,0,0x66,0x66,0x66,0x66,0x66,0x66,0x66,0x3c,0,0,0,0,0}, // Ü
+  {0,0,0x66,0x66,0,0x66,0x66,0x66,0x66,0x66,0x3e,0,0,0,0,0}, // ü
+};
+inline bool isTurkish(uint8_t cell) { return cell >= 0x10 && cell < 0x1c; }
+
+// Strict UTF-8 decoding; malformed sequences always make forward progress.
+inline uint32_t next(const char *text, size_t size, size_t &offset) {
+  const uint8_t first = static_cast<uint8_t>(text[offset++]);
+  if (first < 0x80) return first;
+  const int count = first >= 0xc2 && first <= 0xdf ? 1 :
+                    first >= 0xe0 && first <= 0xef ? 2 :
+                    first >= 0xf0 && first <= 0xf4 ? 3 : 0;
+  if (!count || offset + count > size) return 0xfffd;
+  uint32_t cp = first & ((1u << (6 - count)) - 1);
+  for (int i = 0; i < count; ++i) {
+    const uint8_t b = static_cast<uint8_t>(text[offset + i]);
+    if ((b & 0xc0) != 0x80) return 0xfffd;
+    cp = (cp << 6) | (b & 0x3f);
+  }
+  offset += count;
+  if ((count == 1 && cp < 0x80) || (count == 2 && cp < 0x800) ||
+      (count == 3 && cp < 0x10000) || cp > 0x10ffff ||
+      (cp >= 0xd800 && cp <= 0xdfff)) return 0xfffd;
+  return cp;
+}
+inline std::string cells(const char *text, size_t size) {
+  std::string out;
+  out.reserve(size);
+  size_t offset = 0;
+  while (offset < size) {
+    const uint32_t cp = next(text, size, offset);
+    if ((cp >= 32 && cp <= 126) || (cp >= 1 && cp <= 3) ||
+        (cp >= 0x10 && cp < 0x1c) || cp == '\n') {
+      out += static_cast<char>(cp);
+      continue;
+    }
+    bool found = false;
+    for (size_t i = 0; i < 12; ++i) {
+      if (cp == TurkishCodepoints[i]) {
+        out += static_cast<char>(0x10 + i);
+        found = true;
+        break;
+      }
+    }
+    if (found) continue;
+    if (cp == 0x2018 || cp == 0x2019) out += static_cast<char>(39);
+    else if (cp == 0x201c || cp == 0x201d) out += static_cast<char>(34);
+    else if (cp == 0x2013 || cp == 0x2014) out += '-';
+    else if (cp == 0x2026) out += "...";
+    else if (cp == '\r') continue;
+    else if (cp == '\t') out += ' ';
+    else out += '?';
+  }
+  return out;
+}
+}

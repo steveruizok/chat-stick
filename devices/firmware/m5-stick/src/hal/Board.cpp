@@ -10,6 +10,7 @@ namespace {
 M5PM1 pm1;
 bool pm1Ready = false;
 unsigned long lastPm1PollMs = 0;
+bool externalSpeaker = false;
 uint8_t currentBrightness = DEFAULT_BRIGHTNESS;
 m5pm1_pwr_src_t currentPowerSource = M5PM1_PWR_SRC_UNKNOWN;
 
@@ -55,6 +56,9 @@ void configureRtcPullup(gpio_num_t pin) {
 
 namespace Board {
 void configureSpeaker(m5::speaker_config_t &cfg, bool external, int gain) {
+  externalSpeaker = external;
+  M5.Power.setExtOutput(external);
+  setAudioAmpEnabled(false);
   if (external) {
     // HAT SPK2 (MAX98357 I2S) on the StickS3 HAT header.
     // Header positions map StickC+2's G26/G25/G0 → StickS3's G0/G1/G8.
@@ -83,7 +87,10 @@ void configureSpeaker(m5::speaker_config_t &cfg, bool external, int gain) {
 bool init() {
   auto cfg = M5.config();
   cfg.serial_baudrate = 115200;
+  cfg.output_power = false;
   M5.begin(cfg);
+  M5.Power.setExtOutput(false);
+  setAudioAmpEnabled(false);
 
   const m5pm1_err_t pm1BeginRc = pm1.begin(&M5.In_I2C);
   if (pm1BeginRc == M5PM1_OK) {
@@ -151,7 +158,14 @@ void setDisplayBrightness(uint8_t brightness) {
 
 uint8_t displayBrightness() { return currentBrightness; }
 
-void setAudioAmpEnabled(bool) {}
+void setAudioAmpEnabled(bool enabled) {
+  // PM1 GPIO3 drives the internal amp. Its mux is bits 6:7, not bit 3.
+  auto &power = M5.Power.M5pm1;
+  power.setGPIOOutput(m5::M5PM1_Class::gpio3, enabled && !externalSpeaker);
+  power.setGPIODrive(m5::M5PM1_Class::gpio3, m5::M5PM1_Class::push_pull);
+  power.setGPIOMode(m5::M5PM1_Class::gpio3, m5::M5PM1_Class::output);
+  power.setGPIOFunction(m5::M5PM1_Class::gpio3, m5::M5PM1_Class::gpio);
+}
 
 int batteryLevel() { return M5.Power.getBatteryLevel(); }
 
@@ -210,6 +224,8 @@ DeepSleepWakeReason deepSleepWakeReason() {
 }
 
 void enterDeepSleep(uint64_t sleepUs) {
+  setAudioAmpEnabled(false);
+  M5.Power.setExtOutput(false);
   esp_sleep_enable_timer_wakeup(sleepUs);
   configureRtcPullup(BUTTON_A_PIN);
   configureRtcPullup(BUTTON_B_PIN);
@@ -222,6 +238,8 @@ void enterDeepSleep(uint64_t sleepUs) {
 }
 
 void powerOff() {
+  setAudioAmpEnabled(false);
+  M5.Power.setExtOutput(false);
   if (pm1Ready) {
     const m5pm1_err_t rc = pm1.shutdown();
     Serial.printf("[Power] PM1 shutdown rc=%d\n", static_cast<int>(rc));
